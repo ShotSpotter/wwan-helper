@@ -1,0 +1,175 @@
+#!/bin/sh
+set -eu
+
+# Copyright (C) 2016  Martin Krafft <madduck@madduck.net>
+# Copyright (C) 2022  Robert B. Calhoun <rcalhoun@shotspotter.com
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+setup() {
+  # Setup of the handler script. This is entirely optional and can be anything
+  # you need to make the script work, including creating temporary files, and
+  # setting up variables used by the main loop, such as $SERIAL_DEV and
+  # $CHAT_TIMEOUT, in case you want to use the `modemchat` helper function.
+  # You could also set these variables outside the function.
+  #
+  # Failure is fatal and will cause wwan-helper to exit with an error.
+
+  RUNDIR="/run/$0"
+  # fixme, LE910C4 has two sim slots (slot 1 slot2), we are assuming slot 1
+  # contains SIM
+
+  mkdir -p "${RUNDIR}"
+
+}
+
+readvars() {
+  MODEM=$(cat "${RUNDIR}/Modem") || (echo "could not read cached Modem"; return $?)
+  SIM=$(cat "${RUNDIR}/SIM") || (echo "could not read cached SIM" ; return $?)
+  return 0
+}
+
+init() {
+  # Steps required to initialise the modem to the point where it's ready to
+  # take commands. This might involve turning it on.
+  #
+  # The function must block until the modem is ready.
+  #
+  # Failure is fatal and will cause wwan-helper to exit with an error.
+
+  mmcli --scan-modems || return $?
+  # what if more than one modem? For now, take the first
+  RESULT=$(mmcli --list-modems | grep -E -o '/org/freedesktop/ModemManager1/Modem/[0-9]+') || (echo "no modem" ; return 1)
+  MODEM=$(basename "$(echo "${RESULT}" | head -n1)")
+  echo "${MODEM}" > "${RUNDIR}/Modem"
+  # what if more than one modem? For now, take the first
+  RESULT=$(mmcli --modem "${MODEM}" | grep -E -o '/org/freedesktop/ModemManager1/SIM/[0-9]+') || (echo "no sim" ; return 1)
+  SIM=$(basename "$(echo "${RESULT}" | head -n1)")
+  echo "${SIM}" > "${RUNDIR}/SIM"
+  
+  mmcli -m "${MODEM}" -e --set-power-state-on                                           
+
+}
+
+unlock() {
+  # Steps required to unlock the SIM. It will only be called if a SIM PIN is
+  # specified in the configuration.
+  #
+  # The function must block until the SIM is accessible.
+  #
+  # Be careful to avoid repeatedly sending a PIN as that might yield the SIM
+  # card to lock itself.
+  #
+  # Failure is fatal and will cause wwan-helper to exit with an error.
+  
+  if [ "${PIN}" ] ; then
+    echo "unlocking sim"
+    readvars || return $?
+    mmcli --modem="${MODEM}" --sim="${SIM}" --pin="${PIN}" || return $?
+  else
+    echo "no pin defined, assuming sim is unlocked"
+  fi
+  return 0
+  
+
+}
+
+register() {
+  # Steps required to register the SIM with the network.
+  #
+  # The function must block until the SIM is registered.
+
+
+  echo FIXME: will need to active sim on some carriers
+  :
+}
+
+connect() {
+  # Steps required to connect the carrier. Please note that wwan-helper only
+  # works with NDIS carrier setups (no PPP chat).
+  #
+  # The function must block until the carrier is connected.
+  #
+  # Failure is fatal and will cause wwan-helper to retry, unless the user
+  # didn't configure retires, in which case it will cause wwan-helper to exit
+  # with an error.
+
+  if [ "${APN}" ] ; then
+    readvars || return $?
+    mmcli -m "${MODEM}" --simple-connect="apn=${APN},ip-type=ipv4" || (echo "simple-connect failed" ; return $?)
+  else
+    echo "Expected wwan-apn in /etc/network/interfaces"
+    return 1
+  fi
+
+  ip link set "${IFACE}" up || (echo "ip link up failed" ; return $?)
+  
+  # some people think you shouldn't use dhcp
+  # https://lists.freedesktop.org/archives/libqmi-devel/2020-April/003263.html
+  # but techship says its ok
+  # https://techship.com/faq/how-to-step-by-step-set-up-a-data-connection-over-qmi-interface-using-qmicli-and-in-kernel-driver-qmi-wwan-in-linux/
+  udhcpc -q -f -n -i wwan0  || (echo "udhcpc failed" ; return $?)
+  return 0
+}
+
+reset() {
+  # If any of the above steps are unsuccessful and the user configured
+  # a non-zero number of retries, this function is called. It is required to
+  # take all steps necessary to reset the modem to before the "register" step,
+  # i.e. including re-initialisation and unlocking of the SIM if required (it
+  # can just call those functions…)
+  #
+  # The function must block until the card is ready to get registered with the
+  # network.
+  #
+  # Failure is fatal and will cause wwan-helper to retry, unless the user
+  # didn't configure retires, in which case it will cause wwan-helper to exit
+  # with an error.
+  
+  readvars || return $?
+  mmcli -m "${MODEM}" --reset
+  return $?
+}
+
+disconnect() {
+  # Steps required to disconnect the carrier.
+  #
+  # The script must block until the carrier is disconnected.
+  #
+  # Failure is *not* fatal and in case of an error, wwan-helper will just
+  # proceed to shut down the card.
+  ip link set "${IFACE}" down || (echo "ip link down failed" ; return $?)
+  readvars || return $?
+  mmcli -m "${MODEM}" --simple-disconnect
+  return $?
+}
+
+shutdown() {
+  # Steps required to shut-down the the modem. This usually means turning off
+  # the send-receive unit and/or putting the card into a power-safe mode.
+  #
+  # The script must block until the card is shut-down.
+  #
+  # Failure is *not* fatal and in case of an error, wwan-helper will just
+  # finish and pretend the world is all in order.
+  readvars || return $?
+  mmcli -m "${MODEM}" --set-power-state-low
+}
+
+teardown() {
+  # Optional steps to tear-down the handler script, e.g. removing temporary
+  # files, etc.
+  #
+  # Failure is fatal and will cause wwan-helper to exit with an error.
+  rm -rf "${RUNDIR}"
+}
