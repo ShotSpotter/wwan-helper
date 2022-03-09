@@ -60,13 +60,15 @@ init() {
     return 1
   fi
 
+  echo "checking power state"
   # not sure what to do with this, can't find qmi_dms_power_state_build_string_from_mask def
   # for now just dump it to the console
-  qmicli -p --device="${SERIAL_DEV}" --dms-get-power-state | grep 'Power state'
+  qmicli -p --device="${SERIAL_DEV}" --dms-get-power-state
 
 
+  echo "get operating mode"
   RETVAL=1
-  for i in 1 2 3 4 5 6 ; do
+  for i in $(seq 1 6); do
     if qmicli -p --device="${SERIAL_DEV}" --dms-get-operating-mode | grep -q 'online' ; then
       echo "modem is online"
       RETVAL=0
@@ -113,8 +115,29 @@ register() {
   # The function must block until the SIM is registered.
 
   # not doing anything yet
+  echo "register step"
   qmicli -p --device="${SERIAL_DEV}" --uim-get-card-status | grep 'Application state'
-  return $?
+
+  echo "operator name"
+  qmicli -p --device="${SERIAL_DEV}" --nas-get-operator-name
+
+  RETVAL=1
+  echo "RSSI"
+  for i in $(seq 1 12) ; do
+    NETWORK=$(qmicli -p --device="${SERIAL_DEV}" --nas-get-signal-strength)
+    #FIXME: cannot attach to network on LTE even though it is better. Only
+    # test for 'umts' for now. When fixed, add -e lte
+    if echo "$NETWORK" | grep -e 'umts' -e 'lte' ; then
+      echo "network up"
+      RETVAL=0
+      break
+    else
+      echo "$NETWORK"
+      echo "waiting to acquire network..."
+      sleep 5
+    fi
+  done
+  return "$RETVAL"
 }
 
 connect() {
@@ -220,7 +243,7 @@ shutdown() {
   # Failure is *not* fatal and in case of an error, wwan-helper will just
   # finish and pretend the world is all in order.
   echo "shutdown"
-  rm -rf "${RUNDIR}"
+  rmdir "${RUNDIR}"
   :
 }
 
