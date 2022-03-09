@@ -25,17 +25,14 @@ setup() {
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
 
-  RUNDIR="/run/$0"
+  RUNDIR="/run/$(basename "$0")"
   # fixme, LE910C4 has two sim slots (slot 1 slot2), we are assuming slot 1
   # contains SIM
-
-  mkdir -p "${RUNDIR}"
-
 }
 
 readvars() {
-  MODEM=$(cat "${RUNDIR}/Modem") || (echo "could not read cached Modem"; return $?)
-  SIM=$(cat "${RUNDIR}/SIM") || (echo "could not read cached SIM" ; return $?)
+  MODEM=$(cat "${RUNDIR}/Modem") || (ERR="$?"; echo "could not read cached Modem"; return "$ERR")
+  SIM=$(cat "${RUNDIR}/SIM") || (ERR="$?"; echo "could not read cached SIM" ; return "$ERR")
   return 0
 }
 
@@ -47,18 +44,27 @@ init() {
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
 
+  echo "RUNDIR is ${RUNDIR}"
+  mkdir -p "${RUNDIR}"
+
   mmcli --scan-modems || return $?
   # what if more than one modem? For now, take the first
-  RESULT=$(mmcli --list-modems | grep -E -o '/org/freedesktop/ModemManager1/Modem/[0-9]+') || (echo "no modem" ; return 1)
+  RESULT=$(mmcli --list-modems | grep -E -o '/org/freedesktop/ModemManager1/Modem/[0-9]+') || (ERR="$?"; echo "no modem"; return "$ERR")
   MODEM=$(basename "$(echo "${RESULT}" | head -n1)")
   echo "${MODEM}" > "${RUNDIR}/Modem"
   # what if more than one modem? For now, take the first
-  RESULT=$(mmcli --modem "${MODEM}" | grep -E -o '/org/freedesktop/ModemManager1/SIM/[0-9]+') || (echo "no sim" ; return 1)
+  RESULT=$(mmcli --modem "${MODEM}" | grep -E -o '/org/freedesktop/ModemManager1/SIM/[0-9]+') || (ERR="$?"; echo "no sim"; return "$ERR")
   SIM=$(basename "$(echo "${RESULT}" | head -n1)")
   echo "${SIM}" > "${RUNDIR}/SIM"
   
-  mmcli -m "${MODEM}" -e --set-power-state-on                                           
+  if (mmcli -m "${MODEM}" | grep -q 'power state: on') ; then
+    echo "modem is on"
+  else
+    echo "powering on modem"
+    mmcli -m "${MODEM}" --set-power-state-on || (ERR="$?"; echo "could not set modem power state on"; return "$ERR")
+  fi
 
+  mmcli -m "${MODEM}" --enable || (ERR="$?"; echo "could not enable modem"; return "$ERR")
 }
 
 unlock() {
@@ -106,19 +112,19 @@ connect() {
 
   if [ "${APN}" ] ; then
     readvars || return $?
-    mmcli -m "${MODEM}" --simple-connect="apn=${APN},ip-type=ipv4" || (echo "simple-connect failed" ; return $?)
+    mmcli -m "${MODEM}" --simple-connect="apn=${APN},ip-type=ipv4" || (ERR="$?"; echo "simple-connect failed" ; return "$ERR")
   else
     echo "Expected wwan-apn in /etc/network/interfaces"
     return 1
   fi
-
-  ip link set "${IFACE}" up || (echo "ip link up failed" ; return $?)
+  echo "activing iface ${IFACE}"
+  ip link set "${IFACE}" up || (ERR="$?"; echo "ip link up failed"; return "$ERR")
   
   # some people think you shouldn't use dhcp
   # https://lists.freedesktop.org/archives/libqmi-devel/2020-April/003263.html
   # but techship says its ok
   # https://techship.com/faq/how-to-step-by-step-set-up-a-data-connection-over-qmi-interface-using-qmicli-and-in-kernel-driver-qmi-wwan-in-linux/
-  udhcpc -q -f -n -i wwan0  || (echo "udhcpc failed" ; return $?)
+  udhcpc -q -f -n -i wwan0  || (ERR="$?"; echo "udhcpc failed"; return "$ERR")
   return 0
 }
 
@@ -148,9 +154,10 @@ disconnect() {
   #
   # Failure is *not* fatal and in case of an error, wwan-helper will just
   # proceed to shut down the card.
-  ip link set "${IFACE}" down || (echo "ip link down failed" ; return $?)
+  ip link set "${IFACE}" down || (ERR="$?"; echo "ip link down failed"; return "$ERR")
   readvars || return $?
-  mmcli -m "${MODEM}" --simple-disconnect
+  mmcli -m "${MODEM}" --simple-disconnect || return $?
+  rm -rf "${RUNDIR}"
   return $?
 }
 
@@ -171,5 +178,5 @@ teardown() {
   # files, etc.
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
-  rm -rf "${RUNDIR}"
+  return 0
 }

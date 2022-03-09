@@ -31,7 +31,7 @@ setup() {
 
 
   SERIAL_DEV=/dev/cdc-wdm0
-  RUNDIR="/run/$0"
+  RUNDIR="/run/$(basename "$0")"
   FIELDS="handle CID"
 
   mkdir -p "${RUNDIR}"
@@ -39,8 +39,8 @@ setup() {
 }
 
 readvars() {
-  HANDLE=$(cat "${RUNDIR}/handle") || (echo "could not read cached handle"; return $?)
-  CID=$(cat "${RUNDIR}/CID") || (echo "could not read cached CID" ; return $?)
+  HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; echo "could not read cached handle"; return "$ERR")
+  CID=$(cat "${RUNDIR}/CID") || (ERR="$?"; echo "could not read cached CID" ; return "$ERR")
   return 0
 }
 
