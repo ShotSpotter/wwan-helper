@@ -50,13 +50,44 @@ init() {
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
 
+  # best documentaion is
+  # https://docs.sixfab.com/page/setting-up-a-data-connection-over-qmi-interface-using-libqmi
+
+  ip link set "$IFACE" down
+
   if ! (lsusb -t | grep -q qmi_wwan) ; then
     echo "qmi driver is not loaded"
     return 1
   fi
 
-  ip link set "$IFACE" down
-  return $?
+  # not sure what to do with this, can't find qmi_dms_power_state_build_string_from_mask def
+  # for now just dump it to the console
+  qmicli -p --device="${SERIAL_DEV}" --dms-get-power-state | grep 'Power state'
+
+
+  RETVAL=1
+  for i in 1 2 3 4 5 6 ; do
+    if qmicli -p --device="${SERIAL_DEV}" --dms-get-operating-mode | grep -q 'online' ; then
+      echo "modem is online"
+      RETVAL=0
+      break
+     else
+      echo "${i}: setting operation mode online"
+      sleep 5
+      qmicli -p --device="${SERIAL_DEV}" --dms-set-operating-mode='online'
+    fi
+  done
+
+  # check for raw ip mode and fix if necessary
+  # LE910C4NA seems to be in raw-ip at boot
+
+  MODE=$(qmicli -p --device="${SERIAL_DEV}" --get-expected-data-format)
+
+  if [ "${MODE}" != "raw-ip" ] ; then
+    echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
+  fi
+
+  return "$RETVAL"
 }
 
 unlock() {
@@ -81,12 +112,9 @@ register() {
   #
   # The function must block until the SIM is registered.
 
-  # check for raw ip mode and fix if necessary
-  MODE=$( qmicli --device="${SERIAL_DEV}" --get-expected-data-format )
-  if [ "${MODE}" != "raw-ip" ] ; then
-    echo "fixme: switch modem to raw ip mode"
-    return 1
-  fi
+  # not doing anything yet
+  qmicli -p --device="${SERIAL_DEV}" --uim-get-card-status | grep 'Application state'
+  return $?
 }
 
 connect() {
@@ -151,6 +179,7 @@ reset() {
   # Failure is fatal and will cause wwan-helper to retry, unless the user
   # didn't configure retires, in which case it will cause wwan-helper to exit
   # with an error.
+  qmicli -p --device="${SERIAL_DEV}" --wds-reset
   :
 }
 
@@ -177,7 +206,8 @@ disconnect() {
   readvars || return $?
   echo "shutting down connection with handle=${HANDLE}, CID=${CID}"
   qmicli -p --device="${SERIAL_DEV}" --wds-stop-network="${HANDLE}" --client-cid="${CID}"
-  rm -rf "${RUNDIR}/*"
+  rm "${RUNDIR}/handle"
+  rm "${RUNDIR}/CID"
   return $?
 }
 
