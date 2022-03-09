@@ -35,6 +35,7 @@ init() {
   # The function must block until the modem is ready.
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
+  :
 }
 
 unlock() {
@@ -47,12 +48,14 @@ unlock() {
   # card to lock itself.
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
+  :
 }
 
 register() {
   # Steps required to register the SIM with the network.
   #
   # The function must block until the SIM is registered.
+  :
 }
 
 connect() {
@@ -64,6 +67,7 @@ connect() {
   # Failure is fatal and will cause wwan-helper to retry, unless the user
   # didn't configure retires, in which case it will cause wwan-helper to exit
   # with an error.
+  :
 }
 
 reset() {
@@ -79,6 +83,7 @@ reset() {
   # Failure is fatal and will cause wwan-helper to retry, unless the user
   # didn't configure retires, in which case it will cause wwan-helper to exit
   # with an error.
+  :
 }
 
 disconnect() {
@@ -88,6 +93,7 @@ disconnect() {
   #
   # Failure is *not* fatal and in case of an error, wwan-helper will just
   # proceed to shut down the card.
+  :
 }
 
 shutdown() {
@@ -98,6 +104,7 @@ shutdown() {
   #
   # Failure is *not* fatal and in case of an error, wwan-helper will just
   # finish and pretend the world is all in order.
+  :
 }
 
 teardown() {
@@ -105,4 +112,5 @@ teardown() {
   # files, etc.
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
+  :
 }
