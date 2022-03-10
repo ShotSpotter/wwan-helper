@@ -29,8 +29,11 @@ setup() {
   # APN=shotspotter01.com.attz
   # PIN=""
 
-
-  SERIAL_DEV=/dev/cdc-wdm0
+  # SERIAL_DEV currently unused but available for AT commands
+  # This is /dev/ttyUSB2 b115200 for the Telit LE910Cx (driver-dependent)
+  SERIAL_DEV=/dev/ttyUSB2
+  # cdc device used by qmicli/libqmi
+  CDC_DEV=/dev/cdc-wdm0
   RUNDIR="/run/$(basename "$0")"
   FIELDS="handle CID"
   return $?
@@ -63,27 +66,27 @@ init() {
   echo "checking power state"
   # not sure what to do with this, can't find qmi_dms_power_state_build_string_from_mask def
   # for now just dump it to the console
-  qmicli -p --device="${SERIAL_DEV}" --dms-get-power-state
+  qmicli -p --device="${CDC_DEV}" --dms-get-power-state
 
 
   echo "get operating mode"
   RETVAL=1
   for i in $(seq 1 6); do
-    if qmicli -p --device="${SERIAL_DEV}" --dms-get-operating-mode | grep -q 'online' ; then
+    if qmicli -p --device="${CDC_DEV}" --dms-get-operating-mode | grep -q 'online' ; then
       echo "modem is online"
       RETVAL=0
       break
      else
       echo "${i}: setting operation mode online"
       sleep 5
-      qmicli -p --device="${SERIAL_DEV}" --dms-set-operating-mode='online'
+      qmicli -p --device="${CDC_DEV}" --dms-set-operating-mode='online'
     fi
   done
 
   # check for raw ip mode and fix if necessary
   # LE910C4NA seems to be in raw-ip at boot
 
-  MODE=$(qmicli -p --device="${SERIAL_DEV}" --get-expected-data-format)
+  MODE=$(qmicli -p --device="${CDC_DEV}" --get-expected-data-format)
 
   if [ "${MODE}" != "raw-ip" ] ; then
     echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
@@ -104,7 +107,7 @@ unlock() {
   # Failure is fatal and will cause wwan-helper to exit with an error.
 
   if [ "$PIN" ] ; then
-    qmicli -p --device="${SERIAL_DEV}" --dms-uim-verify-pin="PIN,${PIN}"
+    qmicli -p --device="${CDC_DEV}" --dms-uim-verify-pin="PIN,${PIN}"
   fi
   return $?
 }
@@ -116,15 +119,15 @@ register() {
 
   # not doing anything yet
   echo "register step"
-  qmicli -p --device="${SERIAL_DEV}" --uim-get-card-status | grep 'Application state'
+  qmicli -p --device="${CDC_DEV}" --uim-get-card-status | grep 'Application state'
 
   echo "operator name"
-  qmicli -p --device="${SERIAL_DEV}" --nas-get-operator-name
+  qmicli -p --device="${CDC_DEV}" --nas-get-operator-name
 
   RETVAL=1
   echo "RSSI"
   for i in $(seq 1 12) ; do
-    NETWORK=$(qmicli -p --device="${SERIAL_DEV}" --nas-get-signal-strength)
+    NETWORK=$(qmicli -p --device="${CDC_DEV}" --nas-get-signal-strength)
     #FIXME: cannot attach to network on LTE even though it is better. Only
     # test for 'umts' for now. When fixed, add -e lte
     if echo "$NETWORK" | grep -e 'umts' -e 'lte' ; then
@@ -153,7 +156,7 @@ connect() {
   mkdir -p "${RUNDIR}"
   if [ -d "${RUNDIR}" ] ; then echo "storing state in ${RUNDIR}" ; else echo "rundir missing" ; fi
 
-  RESULT=$(qmicli -p --device="${SERIAL_DEV}" --wds-start-network="ip-type=4,apn=${APN}" --client-no-release-cid)
+  RESULT=$(qmicli -p --device="${CDC_DEV}" --wds-start-network="ip-type=4,apn=${APN}" --client-no-release-cid)
   ERR=$?
   if [ "$ERR" -eq 0 ] ; then 
     for FIELD in $FIELDS ; do 
@@ -202,7 +205,7 @@ reset() {
   # Failure is fatal and will cause wwan-helper to retry, unless the user
   # didn't configure retires, in which case it will cause wwan-helper to exit
   # with an error.
-  qmicli -p --device="${SERIAL_DEV}" --wds-reset
+  qmicli -p --device="${CDC_DEV}" --wds-reset
   :
 }
 
@@ -228,7 +231,7 @@ disconnect() {
   # FIELDS="handle CID"
   readvars || return $?
   echo "shutting down connection with handle=${HANDLE}, CID=${CID}"
-  qmicli -p --device="${SERIAL_DEV}" --wds-stop-network="${HANDLE}" --client-cid="${CID}"
+  qmicli -p --device="${CDC_DEV}" --wds-stop-network="${HANDLE}" --client-cid="${CID}"
   rm "${RUNDIR}/handle"
   rm "${RUNDIR}/CID"
   return $?
