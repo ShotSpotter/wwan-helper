@@ -123,6 +123,22 @@ register() {
 
   # see if we have our apn in a context
   #FIXME clean up use of temp files
+
+  # need to wait until we can run CGDCONT without erro
+  for i in 1 2 3 4 5 6 ; do 
+    GETCONT=$(printf 'AT+CGDCONT?\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
+    if [ "$GETCONT" = "OK" ] ; then
+      verbose "CGDCONT responsive"
+      break
+    else
+      sleep 5
+      verbose "waiting for CGDCONT"
+    fi
+  done
+  
+  verbose "CGDCONT="$OK"
+
+
   CONTEXT=""
   for i in 0 1 ; do 
     printf 'AT+CGDCONT?\r\n' | atinout - "${SERIAL_DEV}" /tmp/contexts
