@@ -2,7 +2,7 @@
 set -eu
 
 # Copyright (C) 2016  Martin Krafft <madduck@madduck.net>
-# Copyright (C) 2022  Robert B. Calhoun <rcalhoun@shotspotter.com>
+# Copyright (C) yyyy  <your name here>
 #
 # Permission to use, copy, modify, and/or distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -24,21 +24,15 @@ setup() {
   # You could also set these variables outside the function.
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
-
-  # configured in /etc/network/interfaces
-  # APN=myapn-apn-name
-  # PIN=""
-
-  # SERIAL_DEV currently unused but available for AT commands
-  # This is /dev/ttyUSB2 b115200 for the Telit LE910Cx (driver-dependent)
   SERIAL_DEV=/dev/ttyUSB2
-  # cdc device used by qmicli/libqmi
   CDC_DEV=/dev/cdc-wdm0
+
+  INIT_MAXWAIT=28 # from LE910Cx HW User Guide 1VV0301298 Rev. 34
 
   RUNDIR="/run/$(basename "$0")"
   FIELDS="handle CID"
-  return $?
 }
+
 
 readvars() {
   HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; echo "could not read cached handle"; return "$ERR")
@@ -46,16 +40,30 @@ readvars() {
   return 0
 }
 
-init() {
-  # Steps required to initialise the modem to the point where it's ready to
-  # take commands. This might involve turning it on.
-  #
-  # The function must block until the modem is ready.
-  #
-  # Failure is fatal and will cause wwan-helper to exit with an error.
+reset_rf() {
+  RESET=$(printf 'AT+CFUN=4\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
+  for i in 1 2 3 4 5 6 ; do 
+    sleep 5
+    RESET=$(printf 'AT+CFUN=1\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
+    if [ "$RESET" = "OK" ] ; then
+      exit 0
+    else
+      verbose "waiting for CFUN=1"
+    fi
+  done
+  verbose "Failed waiting for CFUN=1"
+  exit 1
+}
 
-  # best documentaion is
-  # https://docs.sixfab.com/page/setting-up-a-data-connection-over-qmi-interface-using-libqmi
+reset_modem() {
+  REBOOT=$(printf 'AT#REBOOT\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
+  verbose "Reboot returned $REBOOT"
+  sleep 5
+  # hack to work around usb enumeration issue
+  cat /dev/bus/usb/002/001 > /dev/null
+}
+
+init() {
 
   ip link set "$IFACE" down
 
@@ -63,30 +71,6 @@ init() {
     echo "qmi driver is not loaded"
     return 1
   fi
-
-  verbose "checking power state"
-  # not sure what to do with this, can't find qmi_dms_power_state_build_string_from_mask def
-  # for now just dump it to the console
-  msg=$(qmicli -p --device="${CDC_DEV}" --dms-get-power-state)
-  # can't find definition of this enum
-  # Power state: 'external-source'
-	# Battery level: '0 %'
-  verbose "$msg"
-
-
-  verbose "get operating mode"
-  RETVAL=1
-  for i in $(seq 1 6); do
-    if qmicli -p --device="${CDC_DEV}" --dms-get-operating-mode | grep -q 'online' ; then
-      verbose "modem is online"
-      RETVAL=0
-      break
-     else
-      echo "${i}: setting operation mode online"
-      sleep 5
-      qmicli -p --device="${CDC_DEV}" --dms-set-operating-mode='online'
-    fi
-  done
 
   # check for raw ip mode and fix if necessary
   # LE910C4NA seems to be in raw-ip at boot
@@ -97,7 +81,22 @@ init() {
     echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
   fi
 
-  return "$RETVAL"
+
+  INIT_MINWAIT=2
+  verbose_begin "Waiting for up to $INIT_MAXWAIT seconds for modem to finish initializing"
+  i=0
+  while [ "$i" -lt "$INIT_MAXWAIT" ]; do
+    i=$((i+1))
+    if [ "$i" -gt "$INIT_MINWAIT" ] && [ -c "${SERIAL_DEV}" ]; then
+      modemchat TIMEOUT 1 '' 'AT' 'OK' && return
+    else
+      sleep 1
+    fi
+    verbose_cont '.'
+  done
+  verbose_end "failed."
+  fail "Modem failed to initialise in $INIT_MAXWAIT seconds"
+  :
 }
 
 unlock() {
@@ -111,6 +110,7 @@ unlock() {
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
 
+  # FIXME ADD PIN
   verbose "unlock sim"
   if [ "$PIN" ] ; then
     qmicli -p --device="${CDC_DEV}" --dms-uim-verify-pin="PIN,${PIN}"
@@ -119,82 +119,82 @@ unlock() {
 }
 
 register() {
-  # Steps required to register the SIM with the network.
-  #
-  # The function must block until the SIM is registered.
 
-  # With the Telit LE910C4, SIM registration is done with the "default" PDP context,
-  # and whatever APN it defines, rather than the APN defined with the "connect" command.
-  # If the default APN cannot be reached (because for example the SIM is bound to a private
-  # APN) the connect call will fail. See
-  # https://lists.freedesktop.org/archives/libqmi-devel/2020-November/003480.html
+  # see if we have our apn in a context
+  #FIXME clean up use of temp files
+  CONTEXT=""
+  for i in 0 1 ; do 
+    printf 'AT+CGDCONT?\r\n' | atinout - "${SERIAL_DEV}" /tmp/contexts
+    grep -e '^+CGDCONT' /tmp/contexts > /tmp/contexts-clean
 
-  # To fix:
-  # 1) ensure a PDP context for the user APN exists
-  # 2) make it the default if so configured
-
-  #TODO: support 3gpp2
-  profile=-1
-  for i in $(seq 0 1) ; do
-    apns=$(qmicli -p --device="${CDC_DEV}" --wds-get-profile-list=3gpp | grep 'APN:' | grep -Eo "'.*'" | tr -d "'")
-    # apns="m2m.com.attz ims sos attm2mglobal"
-    j=1
-    for apn in $apns; do
-      if (echo "$apn" | grep -i "${APN}" ) ; then
-        verbose "${apn} matches ${APN}, profile=${j}"
-        profile="$j"
-        break 2
-      fi
-      j=$((j+1))
-    done
-    # didn't break, so no profile for this apn
-    verbose "No profile found for APN ${APN}; creating new profile..."
-    # create a profile then loop again to find the profile index
-    if [ "$IF_WWAN_ALLOW_ROAMING" = "false" ] ; then
-      qmicli -p --device="${CDC_DEV}" --wds-create-profile=3gpp,apn="${APN}",pdp-type=IPV4V6,auth=NONE,no-roaming=yes,disabled=no || return $?
-    else
-      qmicli -p --device="${CDC_DEV}" --wds-create-profile=3gpp,apn="${APN}",pdp-type=IPV4V6,auth=NONE,no-roaming=no,disabled=no || return $?
-    fi
-    verbose "done, retval $?"
-  done
-
-  default_profile=$(qmicli -p --device="${CDC_DEV}" --wds-get-default-profile-number=3gpp | grep 'Default profile number:' | grep -Eo "'.*'" | tr -d "'")
-  if [ "$profile" -ne "$default_profile" ] ; then
-    verbose "Setting $profile as the default profile"
-    qmicli -p --device="${CDC_DEV}" --wds-set-default-profile-number="3gpp,${profile}" || return $?
-  fi
-
-
-  # not doing anything yet
-  verbose "register step"
-  # TODO: there can be multiple SIMs slots, should support selection
-  msg=$(qmicli -p --device="${CDC_DEV}" --uim-get-card-status)
-  if (echo "$msg" | grep 'Application state' | grep 'ready') ; then
-    verbose "$msg"
-    verbose "SIM is ready"
-  else
-    echo "SIM not ready."
-  fi
-
-  msg=$(qmicli -p --device="${CDC_DEV}" --nas-get-operator-name)
-  verbose "$msg"
-
-
-  RETVAL=1
-  verbose "RSSI"
-  for i in $(seq 1 12) ; do
-    network=$(qmicli -p --device="${CDC_DEV}" --nas-get-signal-strength)
-    if echo "$network" | grep -e 'umts' -e 'lte' ; then
-      verbose "network up"
-      RETVAL=0
+    if grep -q "${APN}" /tmp/contexts-clean ; then
+      CONTEXT=$(grep "${APN}" /tmp/contexts-clean | grep -o -E '\+CGDCONT: [0-9]+' | grep -o -E '[0-9]+')
       break
     else
-      verbose "$network"
-      verbose "waiting to acquire network..."
-      sleep 5
+      # get the last context
+      CONTEXT=$(grep -o -E '\+CGDCONT: [0-9]+' /tmp/contexts-clean | sort |  tail -n1 | grep -o -E '[0-9]+')
+      CONTEXT=$(( CONTEXT + 1 ))
+    fi
+    # create new or overwrite existing context with our apn
+    printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IPV4V6\"" "\"${APN}\"" | atinout - "${SERIAL_DEV}" /tmp/contexts
+    # wipe this out so we only successful exit is via break
+    CONTEXT=""
+  done
+  
+
+  if [ -n "$CONTEXT" ] ; then
+    verbose "APN ${APN} defined on context=$CONTEXT"
+  else
+    echo "Failed to set context"
+    exit 1
+  fi
+  # data-centric only
+  modemchat '' 'AT+CEMODE=3' 'OK'
+  # LTE only
+  modemchat '' 'AT+WS46=28' 'OK'
+
+  # Any operator who will take us
+  modemchat '' 'AT+COPS=0' 'OK'  
+
+  # Telit_2g_3g_4g_registration_process_note_r3 page 11, except we added RF reset if no network after 30 sec
+
+  for i in $(seq 1 12); do
+    if CEREG=$(printf 'AT+CEREG?\r\n' | atinout - "${SERIAL_DEV}" - | grep -E '^\+CEREG') ; then
+      # e.g. "+CEREG: 0,1"
+      STATUS=$(echo "$CEREG" | cut -d',' -f2)
+      case "$STATUS" in
+        0|3|4)
+          reset_rf
+        ;;
+        1|5)
+          break
+        ;;
+        2)
+          if [ "$i" -ne 6 ] ; then
+            sleep 5
+          else
+            # if no tower after 30 seconds, power cycle the RF
+            reset_rf
+          fi
+        ;;
+        *)
+        verbose "unexpected CEREG status $STATUS"
+        exit 1
+        ;;
+      esac
+    else
+        # didn't get a CEREG?!?!
+        sleep 2
     fi
   done
-  return "$RETVAL"
+
+  if [ "$STATUS" -eq 1 ] || [ "$STATUS" -eq 5 ] ; then
+    verbose "Network CEREG=$STATUS, success"
+  else
+    verbose "Network CEREG=$STATUS, failure"
+    exit 1
+  fi
+  :
 }
 
 connect() {
@@ -206,6 +206,7 @@ connect() {
   # Failure is fatal and will cause wwan-helper to retry, unless the user
   # didn't configure retires, in which case it will cause wwan-helper to exit
   # with an error.
+  echo "running connect step"
 
   mkdir -p "${RUNDIR}"
   if [ -d "${RUNDIR}" ] ; then verbose "storing state in ${RUNDIR}" ; else verbose "rundir missing" ; fi
@@ -221,8 +222,6 @@ connect() {
     verbose "modem failed to attach to network"
     return "$ERR"
   fi
-
-  ip link set "${IFACE}" up || return $?
 
   # some people think you shouldn't use dhcp
   # https://lists.freedesktop.org/archives/libqmi-devel/2020-April/003263.html
@@ -245,14 +244,11 @@ connect() {
   ip_gateway=$(grep 'IPv4 gateway address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_mtu=$(grep 'MTU:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
 
-  # complicated and broken
-  #ip address add "${ip_addr}/${ip_mask}" dev wwan0
-  #ip link set dev wwan0 mtu "${ip_mtu}"
-  #ip route add default via "${ip_gateway}"
-
-  # wrong but easy and works
-  udhcpc -q -f -n -i wwan0 || return $?
-  
+  # set up interface
+  ip link set "${IFACE}" up || return $?
+  ip link set dev "${IFACE}" mtu "${ip_mtu}"
+  ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
+  ip route add default via "${ip_gateway}"
 
   # Insert user-defined dns servers if appropriate
   if [ "$IF_DNS_NAMESERVERS" ] ; then
@@ -282,7 +278,6 @@ reset() {
   # Failure is fatal and will cause wwan-helper to retry, unless the user
   # didn't configure retires, in which case it will cause wwan-helper to exit
   # with an error.
-  qmicli -p --device="${CDC_DEV}" --wds-reset
   :
 }
 
@@ -322,8 +317,6 @@ shutdown() {
   #
   # Failure is *not* fatal and in case of an error, wwan-helper will just
   # finish and pretend the world is all in order.
-  verbose "shutdown"
-  rmdir "${RUNDIR}"
   :
 }
 
@@ -331,9 +324,6 @@ teardown() {
   # Optional steps to tear-down the handler script, e.g. removing temporary
   # files, etc.
   #
-  # Note that this step is called after both connect() and disconnect().
-  #
   # Failure is fatal and will cause wwan-helper to exit with an error.
-  verbose "teardown"
   :
 }
