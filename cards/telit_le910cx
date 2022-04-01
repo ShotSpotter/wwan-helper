@@ -282,9 +282,10 @@ connect() {
 
   verbose "setting up ${IFACE}, see ${RUNDIR}/ipdata"
   # set up interface
-  ip link set "${IFACE}" up || return $?
+  ip link set "${IFACE}" up
   ip link set dev "${IFACE}" mtu "${ip_mtu}"
   ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
+  ip route | grep -q default && ip route delete default
   ip route add default via "${ip_gateway}"
 
   # Insert user-defined dns servers if appropriate
