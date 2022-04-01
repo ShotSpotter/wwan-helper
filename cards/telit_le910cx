@@ -33,6 +33,25 @@ setup() {
   FIELDS="handle CID"
 }
 
+at_cmd() {
+  # run at command multiple times until OK
+  cmd="${1}"
+  retries="${2:-1}" 
+  sleep_period="${3:-1}"
+  retval=1
+  for i in $(seq 1 "$retries"); do
+    verbose "trying $cmd"
+    output=$(printf '%s\r\n' "$cmd" | atinout - "${SERIAL_DEV}" - | grep -e 'ERROR' -e 'OK')
+    if [ "$output" = "OK" ] ; then
+      verbose "$output"
+      retval=0
+      break
+    else
+      sleep "$sleep_period"
+    fi
+  done
+  return "$retval"
+}
 
 readvars() {
   HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; echo "could not read cached handle"; return "$ERR")
@@ -41,24 +60,17 @@ readvars() {
 }
 
 reset_rf() {
-  RESET=$(printf 'AT+CFUN=4\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
-  for i in 1 2 3 4 5 6 ; do 
-    sleep 5
-    RESET=$(printf 'AT+CFUN=1\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
-    if [ "$RESET" = "OK" ] ; then
-      verbose "CFUN=4"
-      return 0
-    else
-      verbose "waiting for CFUN=1"
-    fi
-  done
-  verbose "Failed waiting for CFUN=1"
-  return 1
+  verbose "Turning RF off"
+  at_cmd 'AT+CFUN=4' 3 || return $?
+  verbose "Turning RF on"
+  at_cmd 'AT+CFUN=1' 6 5 || return $?
 }
 
+
 reset_modem() {
-  REBOOT=$(printf 'AT#REBOOT\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
-  verbose "Reboot returned $REBOOT"
+  verbose_begin "rebooting modem: "
+  at_cmd 'AT#REBOOT' 3
+  verbose_end "$?"
   sleep 5
   # hack to work around usb enumeration issue
   cat /dev/bus/usb/002/001 > /dev/null
@@ -86,18 +98,17 @@ init() {
   INIT_MINWAIT=2
   verbose_begin "Waiting for up to $INIT_MAXWAIT seconds for modem to finish initializing"
   i=0
-  while [ "$i" -lt "$INIT_MAXWAIT" ]; do
-    i=$((i+1))
-    if [ "$i" -gt "$INIT_MINWAIT" ] && [ -c "${SERIAL_DEV}" ]; then
-      modemchat TIMEOUT 1 '' 'AT' 'OK' && return
-    else
-      sleep 1
-    fi
-    verbose_cont '.'
-  done
-  verbose_end "failed."
-  fail "Modem failed to initialise in $INIT_MAXWAIT seconds"
-  :
+  sleep $INIT_MINWAIT
+  at_cmd "AT" "$INIT_MAXWAIT" 1
+  verbose "AT command: $?" 
+
+  if reset_rf ; then
+    verbose "reset_rf success"
+    return 0
+  else
+    verbose "reset_rf failure"
+    return 1
+  fi
 }
 
 unlock() {
@@ -125,20 +136,20 @@ register() {
   #FIXME clean up use of temp files
 
   # need to wait until we can run CGDCONT without erro
-  for i in 1 2 3 4 5 6 ; do 
-    GETCONT=$(printf 'AT+CGDCONT?\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
-    if [ "$GETCONT" = "OK" ] ; then
-      verbose "CGDCONT responsive"
-      break
-    else
-      sleep 5
-      verbose "waiting for CGDCONT"
-    fi
-  done
+  verbose_begin "Checking contexts"
+  at_cmd 'AT+CGDCONT?' 6 5 || return 1
+
+  verbose 'Clearing default context to allow operator to push APN name'
+  # context 1 is default. This command will set the APN="", "IPV4V6", seems to be necessary to connect to LTE
+  if at_cmd 'AT+CGDCONT=1' 3 2 ; then
+    verbose "cleared APN from default context"
+  else
+    echo "FIXME Error setting default context, context is probably in session. We should test for need rather than just create blindly"
+  fi
   
-  verbose "CGDCONT="$OK"
+  #fixme make at_cmd return a value then rewrite this
 
-
+  verbose "finding appropriate for context for ${APN}"
   CONTEXT=""
   for i in 0 1 ; do 
     printf 'AT+CGDCONT?\r\n' | atinout - "${SERIAL_DEV}" /tmp/contexts
@@ -166,35 +177,39 @@ register() {
     return 1
   fi
 
-  vebose "Setting CEMODE to packet-switched only"
-  modemchat '' 'AT+CEMODE=3' 'OK'
-  verbose "Setting WS46 to LTE only"
-  modemchat '' 'AT+WS46=28' 'OK'
-  verbose "Setting COPS to any operator who will take us"
-  modemchat '' 'AT+COPS=0' 'OK'  
+  verbose_begin "Setting CEMODE to packet-switched only: "
+  at_cmd 'AT+CEMODE=0' 3 || return $?
+  
+  verbose_begin "Setting WS46 to LTE only"
+  at_cmd 'AT+WS46=28' 3 || return $?
+
+  verbose_begin "Setting COPS to any operator"
+  at_cmd 'AT+COPS=0' 3 || return $?
 
   # Telit_2g_3g_4g_registration_process_note_r3 page 11, except we added RF reset if no network after 30 sec
 
-  verbose_begin "looking for tower with CEREG..."
-  for i in $(seq 1 12); do
+  verbose_begin "looking for tower with CEREG"
+  for i in $(seq 1 40); do
     if CEREG=$(printf 'AT+CEREG?\r\n' | atinout - "${SERIAL_DEV}" - | grep -E '^\+CEREG') ; then
       # e.g. "+CEREG: 0,1"
       STATUS=$(echo "$CEREG" | cut -d',' -f2)
       case "$STATUS" in
         0|3|4)
+          verbose "CEREG=$STATUS, resetting RF"
           reset_rf
         ;;
         1|5)
-          verbose_end "registered with tower"
+          verbose_end "CEREG=$STATUS, registered with tower"
           break
         ;;
         2)
-          if [ "$i" -ne 6 ] ; then
+          if [ "$i" -ne 20 ] ; then
             verbose_cont "."
             sleep 5
           else
             # if no tower after 30 seconds, power cycle the RF
-            verbose "Resetting RF front end"
+            verbose_cont "."
+            verbose "20 iterations without network, resetting RF front end"
             reset_rf
           fi
         ;;
@@ -227,7 +242,7 @@ connect() {
   # Failure is fatal and will cause wwan-helper to retry, unless the user
   # didn't configure retires, in which case it will cause wwan-helper to exit
   # with an error.
-  echo "running connect step"
+  verbose "running connect step"
 
   mkdir -p "${RUNDIR}"
   if [ -d "${RUNDIR}" ] ; then verbose "storing state in ${RUNDIR}" ; else verbose "rundir missing" ; fi
@@ -319,7 +334,9 @@ disconnect() {
   fi
 
   # bring down interface
-  ip link set "${IFACE}" down || return $?
+  ip route delete default dev "${IFACE}"
+  ip address flush dev "${IFACE}"
+  ip link set "${IFACE}" down
 
   # shut down modem
   # FIELDS="handle CID"
