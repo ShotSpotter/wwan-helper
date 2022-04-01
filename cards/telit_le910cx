@@ -46,13 +46,14 @@ reset_rf() {
     sleep 5
     RESET=$(printf 'AT+CFUN=1\r\n' | atinout - "${SERIAL_DEV}" - | grep -e ERROR -e OK)
     if [ "$RESET" = "OK" ] ; then
-      exit 0
+      verbose "CFUN=4"
+      return 0
     else
       verbose "waiting for CFUN=1"
     fi
   done
   verbose "Failed waiting for CFUN=1"
-  exit 1
+  return 1
 }
 
 reset_modem() {
@@ -137,7 +138,7 @@ register() {
     fi
     # create new or overwrite existing context with our apn
     printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IPV4V6\"" "\"${APN}\"" | atinout - "${SERIAL_DEV}" /tmp/contexts
-    # wipe this out so we only successful exit is via break
+    # wipe out CONTEXT so the only successful return is via break
     CONTEXT=""
   done
   
@@ -146,18 +147,19 @@ register() {
     verbose "APN ${APN} defined on context=$CONTEXT"
   else
     echo "Failed to set context"
-    exit 1
+    return 1
   fi
-  # data-centric only
-  modemchat '' 'AT+CEMODE=3' 'OK'
-  # LTE only
-  modemchat '' 'AT+WS46=28' 'OK'
 
-  # Any operator who will take us
+  vebose "Setting CEMODE to packet-switched only"
+  modemchat '' 'AT+CEMODE=3' 'OK'
+  verbose "Setting WS46 to LTE only"
+  modemchat '' 'AT+WS46=28' 'OK'
+  verbose "Setting COPS to any operator who will take us"
   modemchat '' 'AT+COPS=0' 'OK'  
 
   # Telit_2g_3g_4g_registration_process_note_r3 page 11, except we added RF reset if no network after 30 sec
 
+  verbose_begin "looking for tower with CEREG..."
   for i in $(seq 1 12); do
     if CEREG=$(printf 'AT+CEREG?\r\n' | atinout - "${SERIAL_DEV}" - | grep -E '^\+CEREG') ; then
       # e.g. "+CEREG: 0,1"
@@ -167,19 +169,22 @@ register() {
           reset_rf
         ;;
         1|5)
+          verbose_end "registered with tower"
           break
         ;;
         2)
           if [ "$i" -ne 6 ] ; then
+            verbose_cont "."
             sleep 5
           else
             # if no tower after 30 seconds, power cycle the RF
+            verbose "Resetting RF front end"
             reset_rf
           fi
         ;;
         *)
         verbose "unexpected CEREG status $STATUS"
-        exit 1
+        return 1
         ;;
       esac
     else
@@ -192,7 +197,7 @@ register() {
     verbose "Network CEREG=$STATUS, success"
   else
     verbose "Network CEREG=$STATUS, failure"
-    exit 1
+    return 1
   fi
   :
 }
@@ -244,6 +249,7 @@ connect() {
   ip_gateway=$(grep 'IPv4 gateway address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_mtu=$(grep 'MTU:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
 
+  verbose "setting up ${IFACE}, see ${RUNDIR}/ipdata"
   # set up interface
   ip link set "${IFACE}" up || return $?
   ip link set dev "${IFACE}" mtu "${ip_mtu}"
