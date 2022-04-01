@@ -27,6 +27,7 @@ setup() {
   SERIAL_DEV=/dev/ttyUSB2
   CDC_DEV=/dev/cdc-wdm0
 
+  CHAT_TIMEOUT=3
   INIT_MAXWAIT=28 # from LE910Cx HW User Guide 1VV0301298 Rev. 34
 
   RUNDIR="/run/$(basename "$0")"
@@ -41,7 +42,7 @@ at_cmd() {
   retval=1
   for i in $(seq 1 "$retries"); do
     verbose "trying $cmd"
-    output=$(printf '%s\r\n' "$cmd" | atinout - "${SERIAL_DEV}" - | grep -e 'ERROR' -e 'OK')
+    output=$(printf '%s\r\n' "$cmd" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -e 'ERROR' -e 'OK')
     if [ "$output" = "OK" ] ; then
       verbose "$output"
       retval=0
@@ -152,7 +153,7 @@ register() {
   verbose "finding appropriate for context for ${APN}"
   CONTEXT=""
   for i in 0 1 ; do 
-    printf 'AT+CGDCONT?\r\n' | atinout - "${SERIAL_DEV}" /tmp/contexts
+    printf 'AT+CGDCONT?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" /tmp/contexts
     grep -e '^+CGDCONT' /tmp/contexts > /tmp/contexts-clean
 
     if grep -q "${APN}" /tmp/contexts-clean ; then
@@ -164,7 +165,7 @@ register() {
       CONTEXT=$(( CONTEXT + 1 ))
     fi
     # create new or overwrite existing context with our apn
-    printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IPV4V6\"" "\"${APN}\"" | atinout - "${SERIAL_DEV}" /tmp/contexts
+    printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IPV4V6\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" /tmp/contexts
     # wipe out CONTEXT so the only successful return is via break
     CONTEXT=""
   done
@@ -190,7 +191,7 @@ register() {
 
   verbose_begin "looking for tower with CEREG"
   for i in $(seq 1 40); do
-    if CEREG=$(printf 'AT+CEREG?\r\n' | atinout - "${SERIAL_DEV}" - | grep -E '^\+CEREG') ; then
+    if CEREG=$(printf 'AT+CEREG?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E '^\+CEREG') ; then
       # e.g. "+CEREG: 0,1"
       STATUS=$(echo "$CEREG" | cut -d',' -f2)
       case "$STATUS" in
