@@ -55,23 +55,25 @@ at_cmd() {
 }
 
 readvars() {
-  HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; echo "could not read cached handle"; return "$ERR")
-  CID=$(cat "${RUNDIR}/CID") || (ERR="$?"; echo "could not read cached CID" ; return "$ERR")
+  HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; verbose "could not read cached handle"; return "$ERR")
+  CID=$(cat "${RUNDIR}/CID") || (ERR="$?"; verbose "could not read cached CID" ; return "$ERR")
   return 0
 }
 
 reset_rf() {
   verbose "Turning RF off"
   at_cmd 'AT+CFUN=4' 3 || return $?
+  sleep 2
   verbose "Turning RF on"
   at_cmd 'AT+CFUN=1' 6 5 || return $?
+  at_cmd 'AT+COPS=0' 3 3 || return $?
 }
 
 
 reset_modem() {
-  verbose_begin "rebooting modem: "
+  verbose "rebooting modem: "
   at_cmd 'AT#REBOOT' 3
-  verbose_end "$?"
+  verbose "$?"
   sleep 5
   # hack to work around usb enumeration issue
   cat /dev/bus/usb/002/001 > /dev/null
@@ -82,7 +84,7 @@ init() {
   ip link set "$IFACE" down
 
   if ! (lsusb -t | grep -q qmi_wwan) ; then
-    echo "qmi driver is not loaded"
+    verbose "qmi driver is not loaded"
     return 1
   fi
 
@@ -92,12 +94,13 @@ init() {
   MODE=$(qmicli -p --device="${CDC_DEV}" --get-expected-data-format)
 
   if [ "${MODE}" != "raw-ip" ] ; then
-    echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
+    verbose 'Y' > /sys/class/net/wwan0/qmi/raw_ip
   fi
 
 
   INIT_MINWAIT=2
-  verbose_begin "Waiting for up to $INIT_MAXWAIT seconds for modem to finish initializing"
+  verbose ""
+  verbose "Waiting for up to $INIT_MAXWAIT seconds for modem to finish initializing"
   i=0
   sleep $INIT_MINWAIT
   at_cmd "AT" "$INIT_MAXWAIT" 1
@@ -132,64 +135,92 @@ unlock() {
 }
 
 register() {
-
-  # see if we have our apn in a context
-  #FIXME clean up use of temp files
-
-  # need to wait until we can run CGDCONT without erro
-  verbose_begin "Checking contexts"
+  verbose "set numeric error codes"
+  at_cmd 'AT+CMEE=0'
+  verbose 'Checking contexts'
+  # need to wait until we can run CGDCONT without error
   at_cmd 'AT+CGDCONT?' 6 5 || return 1
 
-  verbose 'Clearing default context to allow operator to push APN name'
-  # context 1 is default. This command will set the APN="", "IPV4V6", seems to be necessary to connect to LTE
-  if at_cmd 'AT+CGDCONT=1' 3 2 ; then
-    verbose "cleared APN from default context"
-  else
-    echo "FIXME Error setting default context, context is probably in session. We should test for need rather than just create blindly"
-  fi
+  # Context 1 is default. ME must be able to attach on context 1 in order to connect on LTE.
+  # If context 1 is "", 3GPP says operator must push the APN, at which point the ME will save
+  # that APN for next time. So we accept user's APN context 1; if it's not there, then try 
+  # erasing whatever is there so operator can push the correct one.
+  output=$(mktemp)
+  for i in 1 2 3 4 5; do
+    printf 'AT+CGDCONT?\r\n' | timeout "${CHAT_TIMEOUT}" atinout - "${SERIAL_DEV}" - | grep '.' > "$output"
+    # if context 1 is our apn, we're done
+    grep "^+CGDCONT: 1,.*${APN}" "$output" && break
+    # Context 1 isn't a useable APN or the command failed; try erasing default context. Note
+    # we aren't requiring the default context to be our APN; if the modem saves it there that
+    # is its own business but we only require it be set to "" per 3GPP.
+    verbose "clearing default context"
+    at_cmd 'AT+CGDCONT=1' 3 3 && break
+    # Failed. Not sure what to do here. We've only seen this when Context=1 is appropriate and because it
+    # is appropriate it is in session and can't be changed. ATZ (soft reset) is harmless but probably won't 
+    # help if there is a real problem.
+    at_cmd 'ATZ' 1 5
+    verbose "failed to clear default context"
+  done
+  rm -f "$output"
   
-  #fixme make at_cmd return a value then rewrite this
+  verbose "Finding appropriate for context for ${APN}..."
+  # code very similar to above; i'm repeating myself because the business of the operator-pushed
+  # APN overwriting undefined context 1 (vs leaving it undefined) is not defined in the documentation.
+  # But this would benefit from a refactor.
 
-  verbose "finding appropriate for context for ${APN}"
+  output=$(mktemp)
+  output_clean=$(mktemp)
   CONTEXT=""
-  for i in 0 1 ; do 
-    printf 'AT+CGDCONT?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" /tmp/contexts
-    grep -e '^+CGDCONT' /tmp/contexts > /tmp/contexts-clean
-
-    if grep -q "${APN}" /tmp/contexts-clean ; then
-      CONTEXT=$(grep "${APN}" /tmp/contexts-clean | grep -o -E '\+CGDCONT: [0-9]+' | grep -o -E '[0-9]+')
+  for i in 1 2 3 4 5 ; do
+    printf 'AT+CGDCONT?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep '.' > "$output"
+    if grep "OK" "$output" ; then
+      verbose "read contexts"
+    else
+      verbose "failed reading contexts, wait 5 sec"
+      sleep 5
+      continue
+    fi
+    # Command executed OK, so we can focus on the context list. 
+    # From experimentation, data connection will fail if we try to use context 1, even if
+    # is our own APN. So skip over context 1 and define a new context at the end.
+    grep -e '^+CGDCONT' "$output" | tail -n +2 > "$output_clean"
+    if grep -q "${APN}" "$output_clean" ; then
+      # found a context, get the number
+      CONTEXT=$(grep "${APN}" "$output_clean" | grep -o -E '\+CGDCONT: [0-9]+' | grep -o -E '[0-9]+')
       break
     else
-      # get the last context
-      CONTEXT=$(grep -o -E '\+CGDCONT: [0-9]+' /tmp/contexts-clean | sort |  tail -n1 | grep -o -E '[0-9]+')
+      # didn't fine one, so get the last context and increment value
+      CONTEXT=$(grep -o -E '\+CGDCONT: [0-9]+' "$output_clean" | sort |  tail -n1 | grep -o -E '[0-9]+')
       CONTEXT=$(( CONTEXT + 1 ))
     fi
     # create new or overwrite existing context with our apn
-    printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IPV4V6\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" /tmp/contexts
+    printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IPV4V6\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" "$output"
     # wipe out CONTEXT so the only successful return is via break
     CONTEXT=""
+    sleep 1
   done
-  
+  rm -f "$output_clean"
+  rm -f "$output"
 
   if [ -n "$CONTEXT" ] ; then
     verbose "APN ${APN} defined on context=$CONTEXT"
   else
-    echo "Failed to set context"
+    verbose "Failed to set context"
     return 1
   fi
 
-  verbose_begin "Setting CEMODE to packet-switched only: "
+  verbose "Setting CEMODE to packet-switched only: "
   at_cmd 'AT+CEMODE=0' 3 || return $?
   
-  verbose_begin "Setting WS46 to LTE only"
+  verbose "Setting WS46 to LTE only"
   at_cmd 'AT+WS46=28' 3 || return $?
 
-  verbose_begin "Setting COPS to any operator"
+  verbose "Setting COPS to any operator"
   at_cmd 'AT+COPS=0' 3 || return $?
 
   # Telit_2g_3g_4g_registration_process_note_r3 page 11, except we added RF reset if no network after 30 sec
 
-  verbose_begin "looking for tower with CEREG"
+  verbose "looking for tower with CEREG"
   for i in $(seq 1 40); do
     if CEREG=$(printf 'AT+CEREG?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E '^\+CEREG') ; then
       # e.g. "+CEREG: 0,1"
@@ -200,16 +231,16 @@ register() {
           reset_rf
         ;;
         1|5)
-          verbose_end "CEREG=$STATUS, registered with tower"
+          verbose "CEREG=$STATUS, registered with tower"
           break
         ;;
         2)
           if [ "$i" -ne 20 ] ; then
-            verbose_cont "."
+            verbose "waiting for signal"
+            printf 'AT+CSQ\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep '.'
             sleep 5
           else
             # if no tower after 30 seconds, power cycle the RF
-            verbose_cont "."
             verbose "20 iterations without network, resetting RF front end"
             reset_rf
           fi
@@ -275,7 +306,7 @@ connect() {
   # Domains: none
 
   ipdata_path="${RUNDIR}/ipdata"
-  qmicli -p --device="${CDC_DEV}" --wds-get-current-settings > "${ipdata_path}" || (echo "no current settings" ; return $? )
+  qmicli -p --device="${CDC_DEV}" --wds-get-current-settings > "${ipdata_path}" || (verbose "no current settings" ; return $? )
   ip_addr=$(grep 'IPv4 address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_mask=$(grep 'IPv4 subnet mask:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_gateway=$(grep 'IPv4 gateway address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
@@ -310,7 +341,11 @@ reset() {
   # take all steps necessary to reset the modem to before the "register" step,
   # i.e. including re-initialisation and unlocking of the SIM if required (it
   # can just call those functions…)
-  #
+  
+  # power cycle, that's kind of aggressive
+  vebose "skipping power-cycle of modem but we could do that"
+  # reset_modem
+  init
   # The function must block until the card is ready to get registered with the
   # network.
   #
