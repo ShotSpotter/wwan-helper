@@ -91,12 +91,15 @@ init() {
   # check for raw ip mode and fix if necessary
   # LE910C4NA seems to be in raw-ip at boot
 
-  MODE=$(qmicli -p --device="${CDC_DEV}" --get-expected-data-format)
-
-  if [ "${MODE}" != "raw-ip" ] ; then
-    echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
-  fi
-
+  for i in 1 2 3 4 5 ; do
+    MODE=$(qmicli -p --device="${CDC_DEV}" --get-expected-data-format)
+    if [ "${MODE}" = "raw-ip" ] ; then
+      break
+    else
+      verbose "settings QMI driver into raw_ip mode ($i)"
+      echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
+    fi
+  done
 
   INIT_MINWAIT=2
   verbose ""
