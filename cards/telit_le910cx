@@ -94,7 +94,7 @@ init() {
   MODE=$(qmicli -p --device="${CDC_DEV}" --get-expected-data-format)
 
   if [ "${MODE}" != "raw-ip" ] ; then
-    verbose 'Y' > /sys/class/net/wwan0/qmi/raw_ip
+    echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
   fi
 
 
