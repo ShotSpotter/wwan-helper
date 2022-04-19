@@ -158,6 +158,13 @@ register() {
     verbose "done, retval $?"
   done
 
+  # $profile now contains the profile ordinal, but contexts don't have to be consecutive
+  # even or in order (e.g. [1] [16] [2] [3] [4] in quectel) and we don't have arrays so reindex
+  contexts=$(qmicli -p --device="${CDC_DEV}" --wds-get-profile-list=3gpp | grep -o '\[.*\]' | grep -oE '[0-9]+')
+  profile=$(echo "$contexts" | head -n"$profile" | tail -n1)
+
+  # this isn't good enough for ATT. We need to have our apn in *context 1* to register on LTE. However, qmicli
+  # has no way of updating profile apn by context number and it won't let me delete context 1 if it is in use.
   default_profile=$(qmicli -p --device="${CDC_DEV}" --wds-get-default-profile-number=3gpp | grep 'Default profile number:' | grep -Eo "'.*'" | tr -d "'")
   if [ "$profile" -ne "$default_profile" ] ; then
     verbose "Setting $profile as the default profile"
