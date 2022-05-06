@@ -2,7 +2,7 @@
 set -eu
 
 # Copyright (C) 2016  Martin Krafft <madduck@madduck.net>
-# Copyright (C) yyyy  <your name here>
+# Copyright (C) 2022  Robert B. Calhoun <rcalhoun@shotspotter.com>
 #
 # Permission to use, copy, modify, and/or distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -192,15 +192,21 @@ register() {
       CONTEXT=$(grep "${APN}" "$output_clean" | grep -o -E '\+CGDCONT: [0-9]+' | grep -o -E '[0-9]+')
       break
     else
-      # didn't fine one, so get the last context and increment value
+      # didn't find one, so get the last context and increment value
       CONTEXT=$(grep -o -E '\+CGDCONT: [0-9]+' "$output_clean" | sort |  tail -n1 | grep -o -E '[0-9]+')
       CONTEXT=$(( CONTEXT + 1 ))
     fi
     # create new or overwrite existing context with our apn
     printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IPV4V6\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" "$output"
+    if [ "$IF_WWAN_LWM2M" ] && ! (grep -q "${IF_WWAN_LWM2M}" "$output_clean") ; then
+      # att requires this
+      CONTEXT=$(( CONTEXT + 1 ))
+      verbose "adding ${IF_WWAN_LWM2M} for remote management"
+      printf "AT+CGDCONT=%d,%s,%s\r\n" "${CONTEXT}" "\"IPV4V6\"" "\"${IF_WWAN_LWM2M}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" /dev/null
+    fi
+    sleep 1
     # wipe out CONTEXT so the only successful return is via break
     CONTEXT=""
-    sleep 1
   done
   rm -f "$output_clean"
   rm -f "$output"
