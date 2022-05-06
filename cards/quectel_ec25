@@ -1,0 +1,384 @@
+#!/bin/sh
+set -eu
+
+# Copyright (C) 2016  Martin Krafft <madduck@madduck.net>
+# Copyright (C) 2022  Robert B. Calhoun <rcalhoun@shotspotter.com>
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+setup() {
+  # Setup of the handler script. This is entirely optional and can be anything
+  # you need to make the script work, including creating temporary files, and
+  # setting up variables used by the main loop, such as $SERIAL_DEV and
+  # $CHAT_TIMEOUT, in case you want to use the `modemchat` helper function.
+  # You could also set these variables outside the function.
+  #
+  # Failure is fatal and will cause wwan-helper to exit with an error.
+  SERIAL_DEV=/dev/ttyUSB2
+  CDC_DEV=/dev/cdc-wdm0
+
+  CHAT_TIMEOUT=3
+  INIT_MAXWAIT=28 # from LE910Cx HW User Guide 1VV0301298 Rev. 34
+
+  RUNDIR="/run/$(basename "$0")"
+  FIELDS="handle CID"
+}
+
+at_cmd() {
+  # run at command multiple times until OK
+  cmd="${1}"
+  retries="${2:-1}" 
+  sleep_period="${3:-1}"
+  retval=1
+  for i in $(seq 1 "$retries"); do
+    verbose "trying $cmd"
+    output=$(printf '%s\r\n' "$cmd" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -e 'ERROR' -e 'OK')
+    if [ "$output" = "OK" ] ; then
+      verbose "$output"
+      retval=0
+      break
+    else
+      sleep "$sleep_period"
+    fi
+  done
+  return "$retval"
+}
+
+readvars() {
+  HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; verbose "could not read cached handle"; return "$ERR")
+  CID=$(cat "${RUNDIR}/CID") || (ERR="$?"; verbose "could not read cached CID" ; return "$ERR")
+  return 0
+}
+
+reset_rf() {
+  reset="${1:-0}"
+  verbose "Turning RF off"
+  at_cmd 'AT+CFUN=4' 3 || return $?
+  sleep 2
+  verbose "Turning RF on"
+  at_cmd "AT+CFUN=1,${reset}" 6 5 || return $?
+  at_cmd 'AT+COPS=0' 3 3 || return $?
+}
+
+
+reset_modem() {
+  verbose "rebooting modem: "
+  
+  # can't find command for this with ec25 use CFUN=1,1
+  # at_cmd 'AT#REBOOT' 3
+  reset_rf 1
+  verbose "$?"
+  sleep 2
+  # hack to work around usb enumeration issue on gateworks 7101
+  cat /dev/bus/usb/002/001 > /dev/null
+  sleep 3
+}
+
+init() {
+
+  ip link set "$IFACE" down
+
+  if ! (lsusb -t | grep -q qmi_wwan) ; then
+    verbose "qmi driver is not loaded"
+    return 1
+  fi
+
+  # check for raw ip mode and fix if necessary
+  # LE910C4NA seems to be in raw-ip at boot
+
+  for i in 1 2 3 4 5 ; do
+    MODE=$(qmicli -p --device="${CDC_DEV}" --get-expected-data-format)
+    if [ "${MODE}" = "raw-ip" ] ; then
+      break
+    else
+      verbose "settings QMI driver into raw_ip mode ($i)"
+      echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
+    fi
+  done
+
+  INIT_MINWAIT=2
+  verbose ""
+  verbose "Waiting for up to $INIT_MAXWAIT seconds for modem to finish initializing"
+  i=0
+  sleep $INIT_MINWAIT
+  at_cmd "AT" "$INIT_MAXWAIT" 1
+  verbose "AT command: $?" 
+
+  if reset_rf ; then
+    verbose "reset_rf success"
+    return 0
+  else
+    verbose "reset_rf failure"
+    return 1
+  fi
+}
+
+unlock() {
+  # Steps required to unlock the SIM. It will only be called if a SIM PIN is
+  # specified in the configuration.
+  #
+  # The function must block until the SIM is accessible.
+  #
+  # Be careful to avoid repeatedly sending a PIN as that might yield the SIM
+  # card to lock itself.
+  #
+  # Failure is fatal and will cause wwan-helper to exit with an error.
+
+  # FIXME ADD PIN
+  verbose "unlock sim"
+  if [ "$PIN" ] ; then
+    qmicli -p --device="${CDC_DEV}" --dms-uim-verify-pin="PIN,${PIN}"
+  fi
+  return $?
+}
+
+register() {
+  verbose "set numeric error codes"
+  at_cmd 'AT+CMEE=0'
+  verbose 'Checking contexts'
+  # need to wait until we can run CGDCONT without error
+  at_cmd 'AT+CGDCONT?' 6 5 || return 1
+
+  # Context 1 is default. ME must be able to attach on context 1 in order to connect on LTE.
+  # If context 1 is "", 3GPP says operator must push the APN. However, the ec25 ignores this
+  # and resets context 1 to a precoded APN ("broadband"). So we must ensure context 1 is user's
+  # APN.
+
+  CONTEXT=""
+  output=$(mktemp)
+  for i in 1 2 3 4 5; do
+    printf 'AT+CGDCONT?\r\n' | timeout "${CHAT_TIMEOUT}" atinout - "${SERIAL_DEV}" - | grep '^\+CGDCONT:' > "$output"
+    # if both context 1 and 2 has our APN, we're done
+    if grep "^+CGDCONT: 1,.*${APN}" "$output" ; then
+      verbose "found ${APN} on context 1"
+      CONTEXT=1
+      break
+    fi
+    # Contexts aren't useable or the command failed; erase all contexts
+    for j in $(cut -d: -f2 "$output" | cut -d, -f1) ; do
+      verbose "clearing context $j"
+      printf "AT+CGDCONT=%d\r\n" "$j" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" /dev/null
+    done
+    
+    printf "AT+CGDCONT=1,%s,%s\r\n" "\"IPV4V6\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" /dev/null
+    if [ "$IF_WWAN_LWM2M" ] ; then
+      # att requires this. quectel adds it to context 16 on boot, so follow suit.
+      verbose "adding ${IF_WWAN_LWM2M} for remote management"
+      printf "AT+CGDCONT=16,%s,%s\r\n" "\"IPV4V6\"" "\"${IF_WWAN_LWM2M}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" /dev/null
+    fi
+  done
+
+  rm -f "$output"
+  
+  if [ -n "$CONTEXT" ] ; then
+    verbose "APN ${APN} defined on context=$CONTEXT"
+  else
+    verbose "Failed to set context"
+    return 1
+  fi
+
+  verbose "Setting service domain to packet-switched only: "
+  # 3gpp command AT+CEMODE=0 throws errors
+  at_cmd 'AT+QCFG="servicedomain",1,1' 3 || return $?
+
+  verbose "Setting scan mode to LTE only"
+  at_cmd 'AT+QCFG="nwscanmode",3,1' 3 || return $?
+
+  verbose "Setting COPS to any operator"
+  at_cmd 'AT+COPS=0' 3 || return $?
+
+  # Telit_2g_3g_4g_registration_process_note_r3 page 11, except we added RF reset if no network after 30 sec
+
+  verbose "looking for tower with CEREG"
+  for i in $(seq 1 40); do
+    if CEREG=$(printf 'AT+CEREG?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E '^\+CEREG') ; then
+      # e.g. "+CEREG: 0,1"
+      STATUS=$(echo "$CEREG" | cut -d',' -f2)
+      case "$STATUS" in
+        0|3|4)
+          verbose "CEREG=$STATUS, resetting RF"
+          reset_rf
+        ;;
+        1|5)
+          verbose "CEREG=$STATUS, registered with tower"
+          break
+        ;;
+        2)
+          if [ "$i" -ne 20 ] ; then
+            verbose "waiting for signal"
+            printf 'AT+CSQ\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep '.'
+            sleep 5
+          else
+            # if no tower after 30 seconds, power cycle the RF
+            verbose "20 iterations without network, resetting RF front end"
+            reset_rf
+          fi
+        ;;
+        *)
+        verbose "unexpected CEREG status $STATUS"
+        return 1
+        ;;
+      esac
+    else
+        # didn't get a CEREG?!?!
+        sleep 2
+    fi
+  done
+
+  if [ "$STATUS" -eq 1 ] || [ "$STATUS" -eq 5 ] ; then
+    verbose "Network CEREG=$STATUS, success"
+  else
+    verbose "Network CEREG=$STATUS, failure"
+    return 1
+  fi
+  :
+}
+
+connect() {
+  # Steps required to connect the carrier. Please note that wwan-helper only
+  # works with NDIS carrier setups (no PPP chat).
+  #
+  # The function must block until the carrier is connected.
+  #
+  # Failure is fatal and will cause wwan-helper to retry, unless the user
+  # didn't configure retires, in which case it will cause wwan-helper to exit
+  # with an error.
+  verbose "running connect step"
+
+  mkdir -p "${RUNDIR}"
+  if [ -d "${RUNDIR}" ] ; then verbose "storing state in ${RUNDIR}" ; else verbose "rundir missing" ; fi
+
+  RESULT=$(qmicli -p --device="${CDC_DEV}" --wds-start-network="ip-type=4,apn=${APN}" --client-no-release-cid)
+  ERR=$?
+  if [ "$ERR" -eq 0 ] ; then 
+    for FIELD in $FIELDS ; do 
+     VALUE=$(echo "${RESULT}" | grep -E -o "${FIELD}: ?'[0-9]+'" | grep -E -o "[0-9]+") && echo "${VALUE}" > "${RUNDIR}/${FIELD}" || return $?
+    done
+    verbose "modem attached to network"
+  else
+    verbose "modem failed to attach to network"
+    return "$ERR"
+  fi
+
+  # some people think you shouldn't use dhcp
+  # https://lists.freedesktop.org/archives/libqmi-devel/2020-April/003263.html
+  # but techship says its ok
+  # https://techship.com/faq/how-to-step-by-step-set-up-a-data-connection-over-qmi-interface-using-qmicli-and-in-kernel-driver-qmi-wwan-in-linux/
+
+  # alternative:
+  # qmicli -p --device="${CDC_DEV}" --wds-get-current-settings
+  # IP Family: IPv4
+  # IPv4 address: 10.65.8.3
+  # IPv4 subnet mask: 255.255.255.248
+  # IPv4 gateway address: 10.65.8.4
+  # MTU: 1430
+  # Domains: none
+
+  ipdata_path="${RUNDIR}/ipdata"
+  qmicli -p --device="${CDC_DEV}" --wds-get-current-settings > "${ipdata_path}" || (verbose "no current settings" ; return $? )
+  ip_addr=$(grep 'IPv4 address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
+  ip_mask=$(grep 'IPv4 subnet mask:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
+  ip_gateway=$(grep 'IPv4 gateway address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
+  ip_mtu=$(grep 'MTU:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
+
+  verbose "setting up ${IFACE}, see ${RUNDIR}/ipdata"
+  # set up interface
+  ip link set "${IFACE}" up
+  ip link set dev "${IFACE}" mtu "${ip_mtu}"
+  ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
+  ip route | grep -q default && ip route delete default
+  ip route add default via "${ip_gateway}"
+
+  # Insert user-defined dns servers if appropriate
+  if [ "$IF_DNS_NAMESERVERS" ] ; then
+    # often /etc/resolv.conf -> /tmp/resolv.conf on embedded
+    RESOLV_PATH=$(realpath /etc/resolv.conf)
+    TMP_PATH=$(mktemp)
+    echo "# created by $0" > "$TMP_PATH"
+    for NAMESERVER in $IF_DNS_NAMESERVERS; do
+      echo "nameserver ${NAMESERVER}" >> "$TMP_PATH"
+    done
+    cp "$RESOLV_PATH" "$RUNDIR"
+    mv "$TMP_PATH" "$RESOLV_PATH"
+  fi
+  return $?
+}
+
+reset() {
+  # If any of the above steps are unsuccessful and the user configured
+  # a non-zero number of retries, this function is called. It is required to
+  # take all steps necessary to reset the modem to before the "register" step,
+  # i.e. including re-initialisation and unlocking of the SIM if required (it
+  # can just call those functions…)
+  
+  # power cycle, that's kind of aggressive
+  vebose "skipping power-cycle of modem but we could do that"
+  # reset_modem
+  init
+  # The function must block until the card is ready to get registered with the
+  # network.
+  #
+  # Failure is fatal and will cause wwan-helper to retry, unless the user
+  # didn't configure retires, in which case it will cause wwan-helper to exit
+  # with an error.
+  :
+}
+
+disconnect() {
+  # Steps required to disconnect the carrier.
+  #
+  # The script must block until the carrier is disconnected.
+  #
+  # Failure is *not* fatal and in case of an error, wwan-helper will just
+  # proceed to shut down the card.
+ 
+  # restore DNS
+  TMP_PATH="${RUNDIR}/resolv.conf"
+  if [ -e "${TMP_PATH}" ] ; then
+    RESOLV_PATH=$(realpath /etc/resolv.conf)
+    mv "$TMP_PATH" "$RESOLV_PATH"
+  fi
+
+  # bring down interface
+  ip route delete default dev "${IFACE}"
+  ip address flush dev "${IFACE}"
+  ip link set "${IFACE}" down
+
+  # shut down modem
+  # FIELDS="handle CID"
+  readvars || return $?
+  verbose "shutting down connection with handle=${HANDLE}, CID=${CID}"
+  qmicli -p --device="${CDC_DEV}" --wds-stop-network="${HANDLE}" --client-cid="${CID}"
+  rm "${RUNDIR}/handle"
+  rm "${RUNDIR}/CID"
+  return $?
+}
+
+shutdown() {
+  # Steps required to shut-down the the modem. This usually means turning off
+  # the send-receive unit and/or putting the card into a power-safe mode.
+  #
+  # The script must block until the card is shut-down.
+  #
+  # Failure is *not* fatal and in case of an error, wwan-helper will just
+  # finish and pretend the world is all in order.
+  :
+}
+
+teardown() {
+  # Optional steps to tear-down the handler script, e.g. removing temporary
+  # files, etc.
+  #
+  # Failure is fatal and will cause wwan-helper to exit with an error.
+  :
+}
