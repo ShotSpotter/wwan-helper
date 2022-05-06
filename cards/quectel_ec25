@@ -114,11 +114,11 @@ init() {
   at_cmd "AT" "$INIT_MAXWAIT" 1
   verbose "AT command: $?" 
 
-  if reset_rf ; then
-    verbose "reset_rf success"
+  if at_cmd 'AT+CFUN=1' ; then
+    verbose "modem power up success"
     return 0
   else
-    verbose "reset_rf failure"
+    verbose "modem power up failure"
     return 1
   fi
 }
