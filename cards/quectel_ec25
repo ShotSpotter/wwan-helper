@@ -80,7 +80,7 @@ reset_modem() {
   verbose "$?"
   sleep 2
   # hack to work around usb enumeration issue on gateworks 7101
-  cat /dev/bus/usb/002/001 > /dev/null
+  if [ -e  /dev/bus/usb/002/001 ] ; then cat /dev/bus/usb/002/001 > /dev/null ; fi
   sleep 3
 }
 
