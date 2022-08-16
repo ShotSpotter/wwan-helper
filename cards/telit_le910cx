@@ -196,8 +196,8 @@ register() {
       CONTEXT=$(grep -o -E '\+CGDCONT: [0-9]+' "$output_clean" | sort |  tail -n1 | grep -o -E '[0-9]+')
       CONTEXT=$(( CONTEXT + 1 ))
     fi
-    # create new or overwrite existing context with our apn
-    printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IPV4V6\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" "$output"
+    # create new or overwrite existing context with our apn. Per ATT, this should be "IP" (vs IPV4V6) if the APN is an IPV4 endpoint
+    printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IP\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" "$output"
     if [ "$IF_WWAN_LWM2M" ] && ! (grep -q "${IF_WWAN_LWM2M}" "$output_clean") ; then
       # att requires this
       CONTEXT=$(( CONTEXT + 1 ))
@@ -218,8 +218,8 @@ register() {
     return 1
   fi
 
-  verbose "Setting CEMODE to packet-switched only: "
-  at_cmd 'AT+CEMODE=0' 3 || return $?
+  verbose "Setting CEMODE to CS/PS per ATT: "
+  at_cmd 'AT+CEMODE=2' 3 || return $?
   
   verbose "Setting WS46 to LTE only"
   at_cmd 'AT+WS46=28' 3 || return $?
