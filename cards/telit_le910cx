@@ -288,21 +288,31 @@ connect() {
   mkdir -p "${RUNDIR}"
   if [ -d "${RUNDIR}" ] ; then verbose "storing state in ${RUNDIR}" ; else verbose "rundir missing" ; fi
 
-  RESULT=$(qmicli -p --device="${CDC_DEV}" --wds-start-network="ip-type=4,apn=${APN}" --client-no-release-cid)
-  ERR=$?
-  if [ "$ERR" -eq 0 ] ; then 
-    for FIELD in $FIELDS ; do 
-     VALUE=$(echo "${RESULT}" | grep -E -o "${FIELD}: ?'[0-9]+'" | grep -E -o "[0-9]+") && echo "${VALUE}" > "${RUNDIR}/${FIELD}" || return $?
-    done
-    verbose "modem attached to network"
-  else
-    verbose "modem failed to attach to network"
-    return "$ERR"
-  fi
+  # count backwards and fail if we reach 0.
+  for i in 4 3 2 1 0 ; do
+    RESULT=$(qmicli -p --device="${CDC_DEV}" --wds-start-network="ip-type=4,apn=${APN}" --client-no-release-cid)
+    ERR=$?
+    if [ "$ERR" -eq 0 ] ; then
+      verbose "modem attached to network"
+      for FIELD in $FIELDS ; do
+        VALUE=$(echo "${RESULT}" | grep -E -o "${FIELD}: ?'[0-9]+'" | grep -E -o "[0-9]+") && echo "${VALUE}" > "${RUNDIR}/${FIELD}" || return $?
+      done
+      break
+    else
+      if [ "$i" -gt 0 ] ; then
+        verbose "modem failed to attach to network, wait 5 seconds and try again..."
+        sleep 5
+      else
+        verbose "modem failed to attach to network, exiting with failure."
+        return "$ERR"
+      fi
+    fi
+  done
+  # break continues here
 
-  # some people think you shouldn't use dhcp
+  # Now get an address. Some people think you shouldn't use dhcp:
   # https://lists.freedesktop.org/archives/libqmi-devel/2020-April/003263.html
-  # but techship says its ok
+  # Techship says its ok:
   # https://techship.com/faq/how-to-step-by-step-set-up-a-data-connection-over-qmi-interface-using-qmicli-and-in-kernel-driver-qmi-wwan-in-linux/
 
   # alternative:
