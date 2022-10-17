@@ -349,6 +349,7 @@ connect() {
       echo "nameserver ${NAMESERVER}" >> "$TMP_PATH"
     done
     cp "$RESOLV_PATH" "$RUNDIR"
+    chmod 644 "$TMP_PATH"
     mv "$TMP_PATH" "$RESOLV_PATH"
   fi
   return $?
@@ -386,6 +387,7 @@ disconnect() {
   TMP_PATH="${RUNDIR}/resolv.conf"
   if [ -e "${TMP_PATH}" ] ; then
     RESOLV_PATH=$(realpath /etc/resolv.conf)
+    chmod 644 "$TMP_PATH"
     mv "$TMP_PATH" "$RESOLV_PATH"
   fi
 
