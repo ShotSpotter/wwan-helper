@@ -107,15 +107,7 @@ init() {
   i=0
   sleep $INIT_MINWAIT
   at_cmd "AT" "$INIT_MAXWAIT" 1
-  verbose "AT command: $?" 
-
-  if reset_rf ; then
-    verbose "reset_rf success"
-    return 0
-  else
-    verbose "reset_rf failure"
-    return 1
-  fi
+  verbose "AT command: $?"
 }
 
 unlock() {
