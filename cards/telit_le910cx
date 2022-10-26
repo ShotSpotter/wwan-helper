@@ -61,12 +61,16 @@ readvars() {
 }
 
 reset_rf() {
+  verbose 'PS detach'
+  at_cmd 'AT+CGATT=0' 1
   verbose "Turning RF off"
   at_cmd 'AT+CFUN=4' 3 || return $?
   sleep 2
   verbose "Turning RF on"
   at_cmd 'AT+CFUN=1' 6 5 || return $?
   at_cmd 'AT+COPS=0' 3 3 || return $?
+  verbose 'PS attach'
+  at_cmd 'AT+CGATT=1' 1
 }
 
 
@@ -130,6 +134,8 @@ unlock() {
 }
 
 register() {
+  verbose "PS detach"
+  at_cmd 'AT+CGATT=0' 3
   verbose "set numeric error codes"
   at_cmd 'AT+CMEE=0'
   verbose 'Checking contexts'
@@ -213,11 +219,17 @@ register() {
   verbose "Setting CEMODE to CS/PS per ATT: "
   at_cmd 'AT+CEMODE=2' 3 || return $?
   
+  verbose "RF full power"
+  at_cmd 'AT+CFUN=1' 3 || return $?
+
   verbose "Setting WS46 to LTE only"
   at_cmd 'AT+WS46=28' 3 || return $?
 
   verbose "Setting COPS to any operator"
   at_cmd 'AT+COPS=0' 3 || return $?
+
+  verbose 'PS attach'
+  at_cmd 'AT+CGATT=1' 1
 
   # Telit_2g_3g_4g_registration_process_note_r3 page 11, except we added RF reset if no network after 30 sec
 
@@ -230,6 +242,7 @@ register() {
         0|3|4)
           verbose "CEREG=$STATUS, resetting RF"
           reset_rf
+          sleep 5
         ;;
         1|5)
           verbose "CEREG=$STATUS, registered with tower"
@@ -276,6 +289,10 @@ connect() {
   # didn't configure retires, in which case it will cause wwan-helper to exit
   # with an error.
   verbose "running connect step"
+
+  # should already be attached
+  verbose 'PS attach (redundant)'
+  at_cmd 'AT+CGATT=1' 3
 
   mkdir -p "${RUNDIR}"
   if [ -d "${RUNDIR}" ] ; then verbose "storing state in ${RUNDIR}" ; else verbose "rundir missing" ; fi
@@ -395,6 +412,10 @@ disconnect() {
   qmicli -p --device="${CDC_DEV}" --wds-stop-network="${HANDLE}" --client-cid="${CID}"
   rm "${RUNDIR}/handle"
   rm "${RUNDIR}/CID"
+
+  # force this since libqmi does not
+  verbose "PS detach"
+  at_cmd 'AT+CGATT=0' 3
   return $?
 }
 
