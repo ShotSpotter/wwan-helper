@@ -137,7 +137,7 @@ register() {
   verbose "PS detach"
   at_cmd 'AT+CGATT=0' 3
   verbose "set numeric error codes"
-  at_cmd 'AT+CMEE=0'
+  at_cmd 'AT+CMEE=1'
   verbose 'Checking contexts'
   # need to wait until we can run CGDCONT without error
   at_cmd 'AT+CGDCONT?' 6 5 || return 1
