@@ -34,7 +34,6 @@ setup() {
   INIT_MAXWAIT=28 # from LE910Cx HW User Guide 1VV0301298 Rev. 34
 
   RUNDIR="/run/$(basename "$0")"
-  FIELDS="handle CID"
 }
 
 at_cmd() {
@@ -55,12 +54,6 @@ at_cmd() {
     fi
   done
   return "$retval"
-}
-
-readvars() {
-  HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; verbose "could not read cached handle"; return "$ERR")
-  CID=$(cat "${RUNDIR}/CID") || (ERR="$?"; verbose "could not read cached CID" ; return "$ERR")
-  return 0
 }
 
 reset_rf() {
@@ -90,8 +83,8 @@ init() {
 
   ip link set "$IFACE" down
 
-  if ! (lsusb -t | grep -q qmi_wwan) ; then
-    verbose "qmi driver is not loaded"
+  if ! (lsusb -t | grep -q cdc_ncm) ; then
+    verbose "cdc_ncm driver is not loaded"
     return 1
   fi
 
@@ -287,17 +280,11 @@ connect() {
   # with an error.
   verbose "running connect step"
 
-  verbose "Context before read is $CONTEXT"
-
-  CONTEXT=$(cat "${RUNDIR}/CID")
-  verbose "Context after read is $CONTEXT"
+  verbose "PDP context is $CONTEXT"
 
   # should already be attached
   verbose 'PS attach (redundant)'
   at_cmd 'AT+CGATT=1' 3
-
-  mkdir -p "${RUNDIR}"
-  if [ -d "${RUNDIR}" ] ; then verbose "storing state in ${RUNDIR}" ; else verbose "rundir missing" ; fi
 
   # count backwards and fail if we reach 0.
   for i in 4 3 2 1 0 ; do
@@ -330,24 +317,26 @@ connect() {
 
   ipdata_path="${RUNDIR}/ipdata"
   rm -f "$ipdata_path"
-  if IPDATA=$('AT+CGCONTRDP=%s\r\n' "$CONTEXT" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E '^\+CGCONTRDP') ; then
-    echo "$IPDATA" > "$ipdata_path"
-    # not shell's finest hour
-    ip_addr=$(echo "$IPDATA" | cut -d',' -f4 | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$1,$2,$3,$4}')
-    ip_mask=$(echo "$IPDATA" | cut -d',' -f4 | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$5,$6,$7,$8}')
-    ip_gateway=$(echo "$IPDATA" | cut -d',' -f5 | tr -d '"')
-    ip_mtu="1400" # not provided?
-  else
-    verbose "could not parse output, check ${RUNDIR}/ipdata"
-  fi
+  printf 'AT+CGCONTRDP=%s\r\n' "$CONTEXT" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E -e '^\+CGCONTRDP' >  "$ipdata_path"
+  # not shell's finest hour. Unsafe if endpoint name contains a comma and probably 30 other reasons. Also, I'm assumign ipv4.
+  ip_addr=$(cut -d',' -f4 "$ipdata_path" | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$1,$2,$3,$4}')
+  ip_mask=$(cut -d',' -f4 "$ipdata_path" | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$5,$6,$7,$8}')
+  ip_gway=$(cut -d',' -f5 "$ipdata_path" | tr -d '"')
+  # not using this yet
+  dns_pri=$(cut -d',' -f6 "$ipdata_path" | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$1,$2,$3,$4}')
+  dns_sec=$(cut -d',' -f7 "$ipdata_path" | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$1,$2,$3,$4}')
+  # ip_mtu="1400" # seemingly not provided by cdc ncm
 
-  verbose "setting up ${IFACE}, see ${RUNDIR}/ipdata"
-  # set up interface
-  ip link set "${IFACE}" up
-  ip link set dev "${IFACE}" mtu "${ip_mtu}"
-  ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
-  ip route | grep -q default && ip route delete default
-  ip route add default via "${ip_gateway}"
+  if [ "$ip_addr" ] && [ "$ip_mask" ] && [ "$ip_gway" ] ; then
+    verbose "setting up ${IFACE} as ${ip_addr}/${ip_mask} ${ip_gway}"
+    verbose "DNS ${dns_pri}, ${dns_sec} ignored for now"
+    # set up interface
+    ip link set "${IFACE}" up
+    # ip link set dev "${IFACE}" mtu "${ip_mtu}"
+    ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
+    ip route | grep -q default && ip route delete default
+    ip route add default via "${ip_gway}"
+  fi
 
   # Insert user-defined dns servers if appropriate
   if [ "$IF_DNS_NAMESERVERS" ] ; then
@@ -407,16 +396,14 @@ disconnect() {
   ip link set "${IFACE}" down
 
   # shut down modem
-  # FIELDS="handle CID"
-  readvars || return $?
-  verbose "shutting down connection with handle=${HANDLE}, CID=${CID}"
-  qmicli -p --device="${CDC_DEV}" --wds-stop-network="${HANDLE}" --client-cid="${CID}"
-  rm "${RUNDIR}/handle"
-  rm "${RUNDIR}/CID"
+  verbose "shutting down cdc-ncm connection"
+  at_cmd 'AT#NCMD=0' 3
+  rm -f "${RUNDIR}/ipdata"
 
-  # force this since libqmi does not
+  # detach from ps network
   verbose "PS detach"
   at_cmd 'AT+CGATT=0' 3
+  rm -f "r${RUNDIR}/CID"
   return $?
 }
 
