@@ -30,10 +30,11 @@ setup() {
 
   # CDC_DEV=/dev/cdc-wdm0
 
-  CHAT_TIMEOUT=3
+  CHAT_TIMEOUT=10
   INIT_MAXWAIT=28 # from LE910Cx HW User Guide 1VV0301298 Rev. 34
 
   RUNDIR="/run/$(basename "$0")"
+  mkdir -p "${RUNDIR}"
 }
 
 at_cmd() {
@@ -121,8 +122,9 @@ unlock() {
 
 register() {
   # remove any existing CID
-  rm "${RUNDIR}/CID"
-
+  rm -f "${RUNDIR}/CID"
+  verbose "NCM detach"
+  at_cmd 'AT#NCMD=0' 3
   verbose "PS detach"
   at_cmd 'AT+CGATT=0' 3
   verbose "set numeric error codes"
@@ -163,17 +165,17 @@ register() {
   CONTEXT=""
   for i in 1 2 3 4 5 ; do
     printf 'AT+CGDCONT?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep '.' > "$output"
-    if grep "OK" "$output" ; then
+    if grep -q "OK" "$output" ; then
       verbose "read contexts"
     else
-      verbose "failed reading contexts, wait 5 sec"
-      sleep 5
+      verbose "failed reading contexts, wait 10 sec"
+      sleep 10
       continue
     fi
     # Command executed OK, so we can focus on the context list. 
     # From experimentation, data connection will fail if we try to use context 1, even if
     # is our own APN. So skip over context 1 and define a new context at the end.
-    grep -e '^+CGDCONT' "$output" | tail -n +2 > "$output_clean"
+    grep -e '^\+CGDCONT' "$output" | tail -n +2 > "$output_clean"
     if grep -q "${APN}" "$output_clean" ; then
       # found a context, get the number
       CONTEXT=$(grep "${APN}" "$output_clean" | grep -o -E '\+CGDCONT: [0-9]+' | grep -o -E '[0-9]+')
@@ -225,7 +227,7 @@ register() {
 
   verbose "looking for tower with CEREG"
   for i in $(seq 1 40); do
-    if CEREG=$(printf 'AT+CEREG?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E '^\+CEREG') ; then
+    if CEREG=$(printf 'AT+CEREG?\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E -e '^\+CEREG') ; then
       # e.g. "+CEREG: 0,1"
       STATUS=$(echo "$CEREG" | cut -d',' -f2)
       case "$STATUS" in
@@ -293,6 +295,7 @@ connect() {
     ERR=$?
     if [ "$ERR" -eq 0 ] ; then
       verbose "modem attached to ncm network"
+      sleep 3
       break
     else
       if [ "$i" -gt 0 ] ; then
@@ -315,9 +318,24 @@ connect() {
   # +CGCONTRDP: 5,5,"shotspotter01.com.attz.mnc170.mcc310.gprs","10.65.99.171.255.0.0.0","10.65.99.172","0.0.0.0","0.0.0.0","0.0.0.0","0.0.0.0"
 
 
-  ipdata_path="${RUNDIR}/ipdata"
-  rm -f "$ipdata_path"
-  printf 'AT+CGCONTRDP=%s\r\n' "$CONTEXT" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E -e '^\+CGCONTRDP' >  "$ipdata_path"
+  ipdata_path=$(mktemp)
+  verbose "ask modem for ipdata"
+
+  # this takes a long time
+  for i in 9 8 7 6 5 4 3 2 1 0 ; do
+    if printf 'AT+CGCONTRDP=%s\r\n' "$CONTEXT" | atinout - "${SERIAL_DEV}" - | grep 'CGCONTRDP:' >  "$ipdata_path" ; then
+      break
+    else
+      if [ "$i" -gt 0 ] ; then
+        verbose "waiting for ip address..."
+      else
+        verbose "could not get an ip"
+        return 1
+      fi
+    fi
+  done
+
+  verbose "$(cat "$ipdata_path")"
   # not shell's finest hour. Unsafe if endpoint name contains a comma and probably 30 other reasons. Also, I'm assumign ipv4.
   ip_addr=$(cut -d',' -f4 "$ipdata_path" | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$1,$2,$3,$4}')
   ip_mask=$(cut -d',' -f4 "$ipdata_path" | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$5,$6,$7,$8}')
@@ -326,6 +344,7 @@ connect() {
   dns_pri=$(cut -d',' -f6 "$ipdata_path" | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$1,$2,$3,$4}')
   dns_sec=$(cut -d',' -f7 "$ipdata_path" | tr -d '"' | awk -F'.' '{printf "%s.%s.%s.%s",$1,$2,$3,$4}')
   # ip_mtu="1400" # seemingly not provided by cdc ncm
+  rm "$ipdata_path"
 
   if [ "$ip_addr" ] && [ "$ip_mask" ] && [ "$ip_gway" ] ; then
     verbose "setting up ${IFACE} as ${ip_addr}/${ip_mask} ${ip_gway}"
@@ -336,16 +355,21 @@ connect() {
     ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
     ip route | grep -q default && ip route delete default
     ip route add default via "${ip_gway}"
+  else
+    verbose "failed to get an ip address"
+    return 1
   fi
 
-  # Insert user-defined dns servers if appropriate
-  if [ "$IF_DNS_NAMESERVERS" ] ; then
+  # Prefer user-provided dns servers if defined
+  NAMESERVERS="${IF_DNS_NAMESERVERS} ${dns_pri} ${dns_sec}"
+
+  if [ "$NAMESERVERS" ] ; then
     # often /etc/resolv.conf -> /tmp/resolv.conf on embedded
     RESOLV_PATH=$(realpath /etc/resolv.conf)
     TMP_PATH=$(mktemp)
     echo "# created by $0" > "$TMP_PATH"
-    for NAMESERVER in $IF_DNS_NAMESERVERS; do
-      echo "nameserver ${NAMESERVER}" >> "$TMP_PATH"
+    for NAMESERVER in $NAMESERVERS; do
+      [ "$NAMESERVER" != "0.0.0.0" ] && echo "nameserver ${NAMESERVER}" >> "$TMP_PATH"
     done
     cp "$RESOLV_PATH" "$RUNDIR"
     chmod 644 "$TMP_PATH"
@@ -398,7 +422,6 @@ disconnect() {
   # shut down modem
   verbose "shutting down cdc-ncm connection"
   at_cmd 'AT#NCMD=0' 3
-  rm -f "${RUNDIR}/ipdata"
 
   # detach from ps network
   verbose "PS detach"
