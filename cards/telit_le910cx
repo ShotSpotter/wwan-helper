@@ -219,6 +219,10 @@ register() {
   verbose "Setting CEMODE to CS/PS per ATT: "
   at_cmd 'AT+CEMODE=2' 3 || return $?
   
+  # This setting does not take effect until reboot, but it persists."
+  verbose "Disabling voice and setting SMS only registration: "
+  at_cmd 'AT#CALLDISA=1,1' 3 || return $?
+
   verbose "RF full power"
   at_cmd 'AT+CFUN=1' 3 || return $?
 
@@ -239,7 +243,7 @@ register() {
       # e.g. "+CEREG: 0,1"
       STATUS=$(echo "$CEREG" | cut -d',' -f2)
       case "$STATUS" in
-        0|3|4)
+        0|4)
           verbose "CEREG=$STATUS, resetting RF"
           reset_rf
           sleep 5
@@ -249,19 +253,17 @@ register() {
           break
         ;;
         2)
-          if [ "$i" -ne 20 ] ; then
-            verbose "waiting for signal"
-            printf 'AT+CSQ\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep '.'
-            sleep 5
-          else
-            # if no tower after 30 seconds, power cycle the RF
-            verbose "20 iterations without network, resetting RF front end"
-            reset_rf
-          fi
+          verbose "CEREG=2, not registered but searching. Checking signal level..."
+          printf 'AT+CSQ\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep '.'
+          sleep 5
+        ;;
+        3)
+          verbose "CEREG=3, or registration denied. Our SIM may be deactivated. Failing."
+          return 1
         ;;
         *)
-        verbose "unexpected CEREG status $STATUS"
-        return 1
+          verbose "unexpected CEREG status $STATUS"
+          return 1
         ;;
       esac
     else
