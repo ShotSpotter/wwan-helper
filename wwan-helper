@@ -40,7 +40,7 @@ is_false() {
 }
 
 if is_true "${IF_WWAN_HELPER_DISABLE:-}"; then
-  fail 1 "'wwan-helper-disable' set to true value, failing..."
+  exit 0
 fi
 
 # unless $VERBOSE elready exists in the environment, initialise it from
