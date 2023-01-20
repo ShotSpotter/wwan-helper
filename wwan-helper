@@ -40,7 +40,7 @@ is_false() {
 }
 
 if is_true "${IF_WWAN_HELPER_DISABLE:-}"; then
-  fail 1 "'wwan-helper-disable' set to true value, failing…"
+  fail 1 "'wwan-helper-disable' set to true value, failing..."
 fi
 
 # unless $VERBOSE elready exists in the environment, initialise it from
@@ -49,14 +49,14 @@ fi
 [ ${VERBOSE:-0} -ge 10 ] && set -v
 [ ${VERBOSE:-0} -ge  5 ] && set -x
 
-# An APN is required for this hook to work. However, …
+# An APN is required for this hook to work. However, ...
 if [ -z "${IF_WWAN_APN:-}" ]; then
   case "$IFACE" in
     usb*|wwan*|ww[xp]*)
-      # … it's only an error if we're handling WWAN interfaces. Otherwise …
+      # ... it's only an error if we're handling WWAN interfaces. Otherwise ...
       fail "No 'wwan-apn' defined in /etc/network/interfaces stanza";;
   esac
-  # … just exit as if nothing has happened.
+  # ... just exit as if nothing has happened.
   exit 0
 fi
 
