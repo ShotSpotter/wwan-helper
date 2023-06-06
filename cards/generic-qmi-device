@@ -41,8 +41,8 @@ setup() {
 }
 
 readvars() {
-  HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; echo "could not read cached handle"; return "$ERR")
-  CID=$(cat "${RUNDIR}/CID") || (ERR="$?"; echo "could not read cached CID" ; return "$ERR")
+  HANDLE=$(cat "${RUNDIR}/handle") || (ERR="$?"; verbose "could not read cached handle"; return "$ERR")
+  CID=$(cat "${RUNDIR}/CID") || (ERR="$?"; verbose "could not read cached CID" ; return "$ERR")
   return 0
 }
 
@@ -60,7 +60,7 @@ init() {
   ip link set "$IFACE" down
 
   if ! (lsusb -t | grep -q qmi_wwan) ; then
-    echo "qmi driver is not loaded"
+    verbose "qmi driver is not loaded"
     return 1
   fi
 
@@ -82,7 +82,7 @@ init() {
       RETVAL=0
       break
      else
-      echo "${i}: setting operation mode online"
+      verbose "${i}: setting operation mode online"
       sleep 5
       qmicli -p --device="${CDC_DEV}" --dms-set-operating-mode='online'
     fi
@@ -180,7 +180,7 @@ register() {
     verbose "$msg"
     verbose "SIM is ready"
   else
-    echo "SIM not ready."
+    verbose "SIM not ready."
   fi
 
   msg=$(qmicli -p --device="${CDC_DEV}" --nas-get-operator-name)
@@ -246,7 +246,7 @@ connect() {
   # Domains: none
 
   ipdata_path="${RUNDIR}/ipdata"
-  qmicli -p --device="${CDC_DEV}" --wds-get-current-settings > "${ipdata_path}" || (echo "no current settings" ; return $? )
+  qmicli -p --device="${CDC_DEV}" --wds-get-current-settings > "${ipdata_path}" || (verbose "no current settings" ; return $? )
   ip_addr=$(grep 'IPv4 address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_mask=$(grep 'IPv4 subnet mask:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_gateway=$(grep 'IPv4 gateway address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
