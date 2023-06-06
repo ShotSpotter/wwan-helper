@@ -150,6 +150,9 @@ The following options are available:
 | wwan-usbid         | hex:hex | The USB ID of the WWAN card                    | (autodetected)
 | wwan-verbose       | numeric | Script verbosity, see <<_debugging,Debugging>> | 0
 | wwan-allow-roaming | boolean | Connect the carrier when roaming               | false
+| wwan-lwm2m         | text    | The carrier's APN for remote management        | (none)
+| wwan-syslog        | boolean | Copy console messages to the syslog            | false
+| dns-nameservers    | text    | Space-delimited IP nameserver IPs              | (none)
 
 Individual card handler scripts can add their own options. For instance, the
 Ericsson handler also reads `wwan-enforce-umts` (boolean).

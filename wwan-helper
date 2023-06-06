@@ -17,8 +17,11 @@ set -eu
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 LOG_PREFIX="wwan-helper"
+WRITE_SYSLOG="${IF_WWAN_SYSLOG:-0}"
+
 error() {
   echo >&2 "${LOG_PREFIX}: $@"
+  is_true ${WRITE_SYSLOG} && logger -t "${LOG_PREFIX}" "$@"
 }
 fail() {
   local retcode
@@ -86,15 +89,19 @@ _be_verbose() { [ $VERBOSE -ge 1 ]; }
 _be_really_verbose() { [ $VERBOSE -ge 2 ]; }
 verbose() {
   ! _be_verbose || echo >&2 "${LOG_PREFIX}: $@"
+  is_true ${WRITE_SYSLOG} && logger -t "${LOG_PREFIX}" "$@"
 }
 verbose_begin() {
   ! _be_verbose || echo -n >&2 "${LOG_PREFIX}: $@ "
+  is_true ${WRITE_SYSLOG} && logger -t "${LOG_PREFIX}" "$@"
 }
 verbose_cont() {
   ! _be_verbose || echo -n >&2 "$@"
+  is_true ${WRITE_SYSLOG} && logger -t "${LOG_PREFIX}" "$@"
 }
 verbose_end() {
   ! _be_verbose || echo >&2 "$@"
+  is_true ${WRITE_SYSLOG} && logger -t "${LOG_PREFIX}" "$@"
 }
 
 modemchat() {
