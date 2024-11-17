@@ -145,6 +145,8 @@ The following options are available:
 | Option             | Domain  | Description                                    | Default
 | ------------------ | ------- | ---------------------------------------------- | --------------
 | wwan-apn           | text    | The carrier's APN                              | (none)
+| wwan-apn-script    | text    | Path to a script that will return an APN to    | (none)
+|                    |         | use if wwan-apn is undefined                   |
 | wwan-pin           | numeric | The SIM PIN (PIN1)                             | (none)
 | wwan-retries       | numeric | The number of retries                          | 0
 | wwan-usbid         | hex:hex | The USB ID of the WWAN card                    | (autodetected)

@@ -53,7 +53,7 @@ fi
 [ ${VERBOSE:-0} -ge  5 ] && set -x
 
 # An APN is required for this hook to work. However, ...
-if [ -z "${IF_WWAN_APN:-}" ]; then
+if [ -z "${IF_WWAN_APN:-}" ] && [ -z "${IF_WWAN_APN_SCRIPT:-}" ]; then
   case "$IFACE" in
     usb*|wwan*|ww[xp]*)
       # ... it's only an error if we're handling WWAN interfaces. Otherwise ...
@@ -64,7 +64,11 @@ if [ -z "${IF_WWAN_APN:-}" ]; then
 fi
 
 # Set defaults
-APN="$IF_WWAN_APN"
+if [ -z "${IF_WWAN_APN:-}" ]; then
+  APN=$($IF_WWAN_APN_SCRIPT)
+else
+  APN="$IF_WWAN_APN"
+fi
 PIN="${IF_WWAN_PIN:-}"
 MAX_RETRIES="${IF_WWAN_RETRIES:-0}"
 USBID="${IF_WWAN_USBID:-}"
