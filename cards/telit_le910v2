@@ -34,6 +34,7 @@ setup() {
   INIT_MAXWAIT=28 # from LE910Cx HW User Guide 1VV0301298 Rev. 34
 
   RUNDIR="/run/$(basename "$0")"
+  verbose "RUNDIR is ${RUNDIR}"
   mkdir -p "${RUNDIR}"
 }
 
@@ -349,7 +350,9 @@ connect() {
   if [ "$ip_addr" ] && [ "$ip_mask" ] && [ "$ip_gway" ] ; then
     verbose "setting up ${IFACE} as ${ip_addr}/${ip_mask} ${ip_gway}"
     verbose "DNS ${dns_pri}, ${dns_sec} ignored for now"
-    # set up interface
+
+    # set up interface, re-flushing to avoid errors if addr already set
+    ip address flush dev "${IFACE}"
     ip link set "${IFACE}" up
     # ip link set dev "${IFACE}" mtu "${ip_mtu}"
     ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
