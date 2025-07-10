@@ -46,9 +46,11 @@ setup() {
   for this_device in $serial_devices; do
     verbose "checking for presence of ${this_device}"
     [ -e "${this_device}" ] || continue
-    # only needed for UART serial ports but harmless
-    verbose "setting baud rate of ${this_device}"
-    stty -F "${this_device}" 115200 || continue
+    # stty only needed for UART serial ports
+    if echo "${this_device}" | grep -q 'tty[OS]' ; then
+      verbose "setting baud rate of ${this_device}"
+      stty -F "${this_device}" 115200 || continue
+    fi
     # try to talk to this serial port. SERIAL_DEV must be set for this to work
     verbose "checking for AT interpreter on ${this_device}"
     SERIAL_DEV="${this_device}"
