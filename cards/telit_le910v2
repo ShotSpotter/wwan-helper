@@ -24,7 +24,7 @@ setup() {
   # You could also set these variables outside the function.
   #
   # Failure is fatal and will cause wwan-helper to exit with an error.
-  SERIAL_DEV=/dev/ttyACM0
+
   # cdc_ncm doesn't appear as a device, CDC_DEV is invalid
   # look for dmesg ' wwan0: register 'cdc_ncm' at usb-musb-hdrc.1-1, Mobile Broadband Network Device (NO ARP), 00:00:11:12:13:14'
 
@@ -36,6 +36,38 @@ setup() {
   RUNDIR="/run/$(basename "$0")"
   verbose "RUNDIR is ${RUNDIR}"
   mkdir -p "${RUNDIR}"
+
+  # search for an available serial port in preferred order
+  # BUGS: won't work if modem hasn't booted yet, but then
+  # we are no worse off than using SERIAL_DEV=/dev/ttyACM0
+  SERIAL_DEV=""
+  serial_devices="/dev/ttyACM0 /dev/ttyACM3 /dev/ttyO1"
+  max_wait=2
+  for this_device in $serial_devices; do
+    verbose "checking for presence of ${this_device}"
+    [ -e "${this_device}" ] || continue
+    # only needed for UART serial ports but harmless
+    verbose "setting baud rate of ${this_device}"
+    stty -F "${this_device}" 115200 || continue
+    # try to talk to this serial port. SERIAL_DEV must be set for this to work
+    verbose "checking for AT interpreter on ${this_device}"
+    SERIAL_DEV="${this_device}"
+    if at_cmd "AT" "${max_wait}" 3; then
+      verbose "verified communication with ${this_device}"
+      break
+    fi
+  done
+
+  # if we failed on all ports, then pick the first device from the list and hope for the best
+  if [ -z "${SERIAL_DEV}" ]; then
+      for this_device in $serial_devices; do
+        verbose "Failed to verify serial port, defaulting SERIAL_DEV=${this_device}"
+        SERIAL_DEV="${this_device}"
+        # always exit after on first iteration
+        break;
+      done
+  fi
+  verbose "set SERIAL_DEV=${SERIAL_DEV}"
 }
 
 at_cmd() {
