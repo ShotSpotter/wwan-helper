@@ -69,6 +69,11 @@ if [ -z "${IF_WWAN_APN:-}" ]; then
 else
   APN="$IF_WWAN_APN"
 fi
+
+if [ -x "{IF_WWAN_LWM2M_SCRIPT}" ]; then
+  IF_WWAN_LWM2M=$($IF_WWAN_LWM2M_SCRIPT)
+fi
+
 PIN="${IF_WWAN_PIN:-}"
 MAX_RETRIES="${IF_WWAN_RETRIES:-0}"
 USBID="${IF_WWAN_USBID:-}"

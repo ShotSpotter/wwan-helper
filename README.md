@@ -153,6 +153,7 @@ The following options are available:
 | wwan-verbose       | numeric | Script verbosity, see <<_debugging,Debugging>> | 0
 | wwan-allow-roaming | boolean | Connect the carrier when roaming               | false
 | wwan-lwm2m         | text    | The carrier's APN for remote management        | (none)
+| wwan-lwm2m-script  | text    | Path to a script that will return wwan-lwm2m   | (none) 
 | wwan-syslog        | boolean | Copy console messages to the syslog            | false
 | dns-nameservers    | text    | Space-delimited IP nameserver IPs              | (none)
 
