@@ -378,7 +378,8 @@ connect() {
       break
     else
       if [ "$i" -gt 0 ] ; then
-        verbose "waiting for ip address..."
+        verbose "waiting for ip address ($i)..."
+        sleep 2
       else
         verbose "could not get an ip"
         return 1

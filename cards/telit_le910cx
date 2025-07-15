@@ -181,9 +181,14 @@ register() {
   # erasing whatever is there so operator can push the correct one.
   output=$(mktemp)
   for i in 1 2 3 4 5; do
+    verbose "$i: checking default context"
     printf 'AT+CGDCONT?\r\n' | timeout "${CHAT_TIMEOUT}" atinout - "${SERIAL_DEV}" - | grep '.' > "$output"
-    # if context 1 is our apn, we're done
-    grep "^+CGDCONT: 1,.*${APN}" "$output" && break
+    default_context=$(grep 'CGDCONT: 1' "$output" | cut -d, -f3)
+    verbose "default context is $default_context"
+    # if context 1 is "", we're done
+    [ "$default_context" = '""' ] && break
+    # if context 1 is our apn or Verizon IMS, we're done
+    echo "$default_context" | grep -q -e "$APN" -e "vzwims" && break
     # Context 1 isn't a useable APN or the command failed; try erasing default context. Note
     # we aren't requiring the default context to be our APN; if the modem saves it there that
     # is its own business but we only require it be set to "" per 3GPP.
