@@ -227,7 +227,7 @@ register() {
     fi
     # create new or overwrite existing context with our apn. Per ATT, this should be "IP" (vs IPV4V6) if the APN is an IPV4 endpoint
     printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IP\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" "$output"
-    if [ "$IF_WWAN_LWM2M" ] && ! (grep -q "${IF_WWAN_LWM2M}" "$output_clean") ; then
+    if [ -n "$IF_WWAN_LWM2M" ] && ! (grep -q "${IF_WWAN_LWM2M}" "$output_clean") ; then
       # att requires this
       CONTEXT=$(( CONTEXT + 1 ))
       verbose "adding ${IF_WWAN_LWM2M} for remote management"
@@ -362,11 +362,11 @@ connect() {
 
   # Now get an address etc. Telit says use AT+CGPADDR=<CID> and AT+CGPADDR and AT+CGCONTRDP=<CID>
   # AT+CGPADDR=5
-  # +CGPADDR: 5,"10.65.99.171"
+  # +CGPADDR: 5,"<ADDR>"
 
   # OK
   # AT+CGCONTRDP=5
-  # +CGCONTRDP: 5,5,"shotspotter01.com.attz.mnc170.mcc310.gprs","10.65.99.171.255.0.0.0","10.65.99.172","0.0.0.0","0.0.0.0","0.0.0.0","0.0.0.0"
+  # +CGCONTRDP: 5,5,"<APN>","<ADDR>.<MASK>,"<ADDR2>","0.0.0.0","0.0.0.0","0.0.0.0","0.0.0.0"
 
 
   ipdata_path=$(mktemp)

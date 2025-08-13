@@ -234,7 +234,7 @@ register() {
     fi
     # create new or overwrite existing context with our apn. Per ATT, this should be "IP" (vs IPV4V6) if the APN is an IPV4 endpoint
     printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IP\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" "$output"
-    if [ "$IF_WWAN_LWM2M" ] && ! (grep -q "${IF_WWAN_LWM2M}" "$output_clean") ; then
+    if [ -n "$IF_WWAN_LWM2M" ] && ! (grep -q "${IF_WWAN_LWM2M}" "$output_clean") ; then
       # att requires this
       CONTEXT=$(( CONTEXT + 1 ))
       verbose "adding ${IF_WWAN_LWM2M} for remote management"
