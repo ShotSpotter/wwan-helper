@@ -392,12 +392,13 @@ connect() {
   ip route replace default via "${ip_gateway}" dev "${IFACE}"
 
   # Insert user-defined dns servers if appropriate
-  if [ "${IF_DNS_NAMESERVERS:-}" ] ; then
+  _dns=$(echo ${IF_DNS_NAMESERVERS:-})
+  if [ -n "$_dns" ] ; then
     # often /etc/resolv.conf -> /tmp/resolv.conf on embedded
     RESOLV_PATH=$(realpath /etc/resolv.conf)
     TMP_PATH=$(mktemp)
     echo "# created by $0" > "$TMP_PATH"
-    for NAMESERVER in ${IF_DNS_NAMESERVERS:-}; do
+    for NAMESERVER in $_dns; do
       echo "nameserver ${NAMESERVER}" >> "$TMP_PATH"
     done
     cp "$RESOLV_PATH" "$RUNDIR"
@@ -444,8 +445,8 @@ disconnect() {
   fi
 
   # bring down interface
-  ip route delete default dev "${IFACE}"
-  ip address flush dev "${IFACE}"
+  ip route delete default dev "${IFACE}" || true
+  ip address flush dev "${IFACE}" || true
   ip link set "${IFACE}" down
 
   # shut down modem

@@ -419,9 +419,14 @@ connect() {
   fi
 
   # Prefer user-provided dns servers if defined
-  NAMESERVERS="${IF_DNS_NAMESERVERS:-} ${dns_pri:-} ${dns_sec:-}"
+  NAMESERVERS=$(echo ${IF_DNS_NAMESERVERS:-} ${dns_pri:-} ${dns_sec:-})
 
-  if [ "$NAMESERVERS" ] ; then
+  _valid_dns=""
+  for NAMESERVER in $NAMESERVERS; do
+    [ "$NAMESERVER" != "0.0.0.0" ] && _valid_dns="true"
+  done
+
+  if [ -n "$_valid_dns" ] ; then
     # often /etc/resolv.conf -> /tmp/resolv.conf on embedded
     RESOLV_PATH=$(realpath /etc/resolv.conf)
     TMP_PATH=$(mktemp)
@@ -473,8 +478,8 @@ disconnect() {
   fi
 
   # bring down interface
-  ip route delete default dev "${IFACE}"
-  ip address flush dev "${IFACE}"
+  ip route delete default dev "${IFACE}" || true
+  ip address flush dev "${IFACE}" || true
   ip link set "${IFACE}" down
 
   # shut down modem
