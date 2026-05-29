@@ -149,7 +149,7 @@ unlock() {
 
   # FIXME ADD PIN
   verbose "unlock sim"
-  if [ "$PIN" ] ; then
+  if [ "${PIN:-}" ] ; then
     verbose "fixme unlock()"
     return 1
   fi
@@ -232,7 +232,7 @@ register() {
     fi
     # create new or overwrite existing context with our apn. Per ATT, this should be "IP" (vs IPV4V6) if the APN is an IPV4 endpoint
     printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IP\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" "$output"
-    if [ -n "$IF_WWAN_LWM2M" ] && ! (grep -q "${IF_WWAN_LWM2M}" "$output_clean") ; then
+    if [ -n "${IF_WWAN_LWM2M:-}" ] && ! (grep -q "${IF_WWAN_LWM2M:-}" "$output_clean") ; then
       # att requires this
       CONTEXT=$(( CONTEXT + 1 ))
       verbose "adding ${IF_WWAN_LWM2M} for remote management"
@@ -412,15 +412,14 @@ connect() {
     ip link set "${IFACE}" up
     # ip link set dev "${IFACE}" mtu "${ip_mtu}"
     ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
-    ip route | grep -q default && ip route delete default
-    ip route add default via "${ip_gway}"
+    ip route replace default via "${ip_gway}" dev "${IFACE}"
   else
     verbose "failed to get an ip address"
     return 1
   fi
 
   # Prefer user-provided dns servers if defined
-  NAMESERVERS="${IF_DNS_NAMESERVERS} ${dns_pri} ${dns_sec}"
+  NAMESERVERS="${IF_DNS_NAMESERVERS:-} ${dns_pri:-} ${dns_sec:-}"
 
   if [ "$NAMESERVERS" ] ; then
     # often /etc/resolv.conf -> /tmp/resolv.conf on embedded
