@@ -75,7 +75,7 @@ setup() {
 at_cmd() {
   # run at command multiple times until OK
   cmd="${1}"
-  retries="${2:-1}" 
+  retries="${2:-1}"
   sleep_period="${3:-1}"
   retval=1
   for i in $(seq 1 "$retries"); do
@@ -86,6 +86,7 @@ at_cmd() {
       retval=0
       break
     else
+      verbose "AT response: ${output:-<no response>}"
       sleep "$sleep_period"
     fi
   done
@@ -170,7 +171,7 @@ register() {
 
   # Context 1 is default. ME must be able to attach on context 1 in order to connect on LTE.
   # If context 1 is "", 3GPP says operator must push the APN, at which point the ME will save
-  # that APN for next time. So we accept user's APN context 1; if it's not there, then try 
+  # that APN for next time. So we accept user's APN context 1; if it's not there, then try
   # erasing whatever is there so operator can push the correct one.
   output=$(mktemp)
   for i in 1 2 3 4 5; do
@@ -188,13 +189,13 @@ register() {
     verbose "clearing default context"
     at_cmd 'AT+CGDCONT=1' 3 3 && break
     # Failed. Not sure what to do here. We've only seen this when Context=1 is appropriate and because it
-    # is appropriate it is in session and can't be changed. ATZ (soft reset) is harmless but probably won't 
+    # is appropriate it is in session and can't be changed. ATZ (soft reset) is harmless but probably won't
     # help if there is a real problem.
     at_cmd 'ATZ' 1 5
     verbose "failed to clear default context"
   done
   rm -f "$output"
-  
+
   verbose "Finding appropriate for context for ${APN}..."
   # code very similar to above; i'm repeating myself because the business of the operator-pushed
   # APN overwriting undefined context 1 (vs leaving it undefined) is not defined in the documentation.
@@ -212,13 +213,17 @@ register() {
       sleep 10
       continue
     fi
-    # Command executed OK, so we can focus on the context list. 
+    # Command executed OK, so we can focus on the context list.
     # From experimentation, data connection will fail if we try to use context 1, even if
     # is our own APN. So skip over context 1 and define a new context at the end.
     grep -e '^\+CGDCONT' "$output" | tail -n +2 > "$output_clean"
     if grep -q "${APN}" "$output_clean" ; then
-      # found a context, get the number
-      CONTEXT=$(grep "${APN}" "$output_clean" | grep -o -E '\+CGDCONT: [0-9]+' | grep -o -E '[0-9]+')
+      # found a context, get the number.
+      # Use tail -n1 to clamp to a single CID and prefer the highest-numbered (user-created)
+      # context over a carrier-preconfigured one.  The APN may appear on multiple contexts
+      # (e.g. carrier CID 2 and a user CID 5 from a prior run); a multi-valued CONTEXT
+      # breaks every subsequent AT command that embeds it (AT#NCM=2,2 5 is invalid).
+      CONTEXT=$(grep "${APN}" "$output_clean" | grep -o -E '\+CGDCONT: [0-9]+' | grep -o -E '[0-9]+' | tail -n1)
       break
     else
       # didn't find one, so get the last context and increment value
@@ -250,7 +255,7 @@ register() {
 
   verbose "Setting CEMODE to CS/PS per ATT: "
   at_cmd 'AT+CEMODE=2' 3 || return $?
-  
+
   verbose "RF full power"
   at_cmd 'AT+CFUN=1' 3 || return $?
 
@@ -313,10 +318,10 @@ register() {
     fi
   done
 
-  if [ "$STATUS" -eq 1 ] || [ "$STATUS" -eq 5 ] ; then
+  if [ "${STATUS:-0}" -eq 1 ] || [ "${STATUS:-0}" -eq 5 ] ; then
     verbose "Network CEREG=$STATUS, success"
   else
-    verbose "Network CEREG=$STATUS, failure"
+    verbose "Network CEREG=${STATUS:-none}, failure"
     return 1
   fi
   :
@@ -374,7 +379,7 @@ connect() {
 
   # this takes a long time
   for i in 9 8 7 6 5 4 3 2 1 0 ; do
-    if printf 'AT+CGCONTRDP=%s\r\n' "$CONTEXT" | timeout 20 atinout - "${SERIAL_DEV}" - | grep 'CGCONTRDP:' >  "$ipdata_path" ; then
+    if printf 'AT+CGCONTRDP=%s\r\n' "$CONTEXT" | timeout 20 atinout - "${SERIAL_DEV}" - | grep 'CGCONTRDP:' | head -n1 >  "$ipdata_path" ; then
       break
     else
       if [ "$i" -gt 0 ] ; then
@@ -438,9 +443,9 @@ reset() {
   # take all steps necessary to reset the modem to before the "register" step,
   # i.e. including re-initialisation and unlocking of the SIM if required (it
   # can just call those functions…)
-  
+
   # power cycle, that's kind of aggressive
-  vebose "skipping power-cycle of modem but we could do that"
+  verbose "skipping power-cycle of modem but we could do that"
   # reset_modem
   init
   # The function must block until the card is ready to get registered with the
@@ -459,7 +464,7 @@ disconnect() {
   #
   # Failure is *not* fatal and in case of an error, wwan-helper will just
   # proceed to shut down the card.
- 
+
   # restore DNS
   TMP_PATH="${RUNDIR}/resolv.conf"
   if [ -e "${TMP_PATH}" ] ; then
@@ -480,7 +485,7 @@ disconnect() {
   # detach from ps network
   verbose "PS detach"
   at_cmd 'AT+CGATT=0' 3
-  rm -f "r${RUNDIR}/CID"
+  rm -f "${RUNDIR}/CID"
   return $?
 }
 
