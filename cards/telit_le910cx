@@ -335,6 +335,8 @@ connect() {
   # should already be attached
   verbose 'PS attach (redundant)'
   at_cmd 'AT+CGATT=1' 3
+  # let PS attach settle before sending AT#NCM
+  sleep 2
 
   mkdir -p "${RUNDIR}"
   verbose "storing state in ${RUNDIR}"
