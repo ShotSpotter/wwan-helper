@@ -123,7 +123,7 @@ init() {
 
   ip link set "$IFACE" down
 
-  if ! (lsusb -t | grep -q qmi_wwan) ; then
+  if ! lsusb -t | grep -q qmi_wwan ; then
     verbose "qmi driver is not loaded"
     return 1
   fi
@@ -358,8 +358,7 @@ connect() {
 
   # count backwards and fail if we reach 0.
   for i in 4 3 2 1 0 ; do
-    RESULT=$(qmicli -p --device="${CDC_DEV}" --wds-start-network="ip-type=4,apn=${APN}" --client-no-release-cid)
-    ERR=$?
+    RESULT=$(qmicli -p --device="${CDC_DEV}" --wds-start-network="ip-type=4,apn=${APN}" --client-no-release-cid) && ERR=0 || ERR=$?
     if [ "$ERR" -eq 0 ] ; then
       verbose "modem attached to network"
       for FIELD in $FIELDS ; do
@@ -393,11 +392,13 @@ connect() {
   # Domains: none
 
   ipdata_path="${RUNDIR}/ipdata"
-  qmicli -p --device="${CDC_DEV}" --wds-get-current-settings > "${ipdata_path}" || (verbose "no current settings" ; return $? )
+  qmicli -p --device="${CDC_DEV}" --wds-get-current-settings > "${ipdata_path}" || { verbose "no current settings"; return 1; }
   ip_addr=$(grep 'IPv4 address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_mask=$(grep 'IPv4 subnet mask:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_gateway=$(grep 'IPv4 gateway address:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   ip_mtu=$(grep 'MTU:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
+  dns_pri=$(grep 'Primary IPv4 DNS:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
+  dns_sec=$(grep 'Secondary IPv4 DNS:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
 
   verbose "setting up ${IFACE}, see ${RUNDIR}/ipdata"
   # set up interface, re-flushing to avoid errors if addr already set
@@ -408,15 +409,21 @@ connect() {
   ip address add "${ip_addr}/${ip_mask}" dev "${IFACE}"
   ip route replace default via "${ip_gateway}" dev "${IFACE}"
 
-  # Insert user-defined dns servers if appropriate
-  _dns=$(echo ${IF_DNS_NAMESERVERS:-})
-  if [ -n "$_dns" ] ; then
+  # Prefer user-provided dns servers if defined, fall back to modem-provided
+  NAMESERVERS="${IF_DNS_NAMESERVERS:-} ${dns_pri:-} ${dns_sec:-}"
+
+  _valid_dns=""
+  for NAMESERVER in $NAMESERVERS; do
+    [ "$NAMESERVER" != "0.0.0.0" ] && _valid_dns="true"
+  done
+
+  if [ -n "$_valid_dns" ] ; then
     # often /etc/resolv.conf -> /tmp/resolv.conf on embedded
     RESOLV_PATH=$(realpath /etc/resolv.conf)
     TMP_PATH=$(mktemp)
     echo "# created by $0" > "$TMP_PATH"
-    for NAMESERVER in $_dns; do
-      echo "nameserver ${NAMESERVER}" >> "$TMP_PATH"
+    for NAMESERVER in $NAMESERVERS; do
+      [ "$NAMESERVER" != "0.0.0.0" ] && echo "nameserver ${NAMESERVER}" >> "$TMP_PATH"
     done
     cp "$RESOLV_PATH" "$RUNDIR"
     chmod 644 "$TMP_PATH"

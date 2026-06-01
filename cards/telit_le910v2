@@ -122,7 +122,7 @@ init() {
 
   ip link set "$IFACE" down
 
-  if ! (lsusb -t | grep -q cdc_ncm) ; then
+  if ! lsusb -t | grep -q cdc_ncm ; then
     verbose "cdc_ncm driver is not loaded"
     return 1
   fi
@@ -234,7 +234,7 @@ register() {
     fi
     # create new or overwrite existing context with our apn. Per ATT, this should be "IP" (vs IPV4V6) if the APN is an IPV4 endpoint
     printf "AT+CGDCONT=%d,%s,%s\r\n" "$CONTEXT" "\"IP\"" "\"${APN}\"" | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" "$output"
-    if [ -n "${IF_WWAN_LWM2M:-}" ] && ! (grep -q "${IF_WWAN_LWM2M:-}" "$output_clean") ; then
+    if [ -n "${IF_WWAN_LWM2M:-}" ] && ! grep -q "${IF_WWAN_LWM2M:-}" "$output_clean" ; then
       # att requires this
       CONTEXT=$(( CONTEXT + 1 ))
       verbose "adding ${IF_WWAN_LWM2M} for remote management"
@@ -353,8 +353,7 @@ connect() {
   # count backwards and fail if we reach 0.
   for i in 4 3 2 1 0 ; do
     # ncm mode 2 (auto-setup) and CID
-    at_cmd "AT#NCM=2,${CONTEXT}" 3
-    ERR=$?
+    at_cmd "AT#NCM=2,${CONTEXT}" 3 && ERR=0 || ERR=$?
     if [ "$ERR" -eq 0 ] ; then
       verbose "modem attached to ncm network"
       sleep 3
@@ -425,7 +424,7 @@ connect() {
   fi
 
   # Prefer user-provided dns servers if defined
-  NAMESERVERS=$(echo ${IF_DNS_NAMESERVERS:-} ${dns_pri:-} ${dns_sec:-})
+  NAMESERVERS="${IF_DNS_NAMESERVERS:-} ${dns_pri:-} ${dns_sec:-}"
 
   _valid_dns=""
   for NAMESERVER in $NAMESERVERS; do
