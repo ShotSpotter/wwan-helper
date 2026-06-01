@@ -105,6 +105,8 @@ reset_rf() {
   at_cmd 'AT+COPS=0' 3 3 || return $?
   verbose 'PS attach'
   at_cmd 'AT+CGATT=1' 1
+  # let PS attach settle
+  sleep 2
 }
 
 
@@ -274,6 +276,8 @@ register() {
 
   verbose 'PS attach'
   at_cmd 'AT+CGATT=1' 1
+  # let PS attach settle
+  sleep 2
 
   # Telit_2g_3g_4g_registration_process_note_r3 page 11, except we added RF reset if no network after 30 sec
 
@@ -284,9 +288,20 @@ register() {
       STATUS=$(echo "$CEREG" | cut -d',' -f2)
       case "$STATUS" in
         0|4)
-          verbose "CEREG=$STATUS, resetting RF"
-          reset_rf
-          sleep 5
+          if [ $(( (i - 1) % 10 )) -eq 9 ] ; then
+            # reset_rf every 10th fail
+            verbose "CEREG=$STATUS after $i tries, resetting RF"
+            reset_rf
+            sleep 5
+          elif [ $(( i % 2 )) -eq 0 ] ; then
+            # Try PS attach again every other fail.
+            verbose "Retrying PS attach after CEREG=$STATUS, try $i"
+            at_cmd 'AT+CGATT=1' 1
+            sleep 5
+          else
+            verbose "CEREG=$STATUS, try $i, waiting"
+            sleep 5
+          fi
         ;;
         1|5)
           verbose "CEREG=$STATUS, registered with tower"

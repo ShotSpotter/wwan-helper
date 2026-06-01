@@ -104,6 +104,8 @@ reset_rf() {
   at_cmd 'AT+COPS=0' 3 3 || return $?
   verbose 'PS attach'
   at_cmd 'AT+CGATT=1' 1
+  # let PS attach settle
+  sleep 2
 }
 
 
@@ -267,6 +269,8 @@ register() {
 
   verbose 'PS attach'
   at_cmd 'AT+CGATT=1' 1
+  # allow attach to settle
+  sleep 2
 
   # Telit_2g_3g_4g_registration_process_note_r3 page 11, except we added RF reset if no network after 30 sec
 
