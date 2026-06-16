@@ -134,10 +134,14 @@ init() {
   for i in 1 2 3 4 5 ; do
     MODE=$(qmicli -p --device="${CDC_DEV}" --get-expected-data-format 2>/dev/null || true)
     if [ "${MODE}" = "raw-ip" ] ; then
+      verbose "QMI driver confirmed raw-ip mode ($i)"
       break
     else
       verbose "settings QMI driver into raw_ip mode ($i)"
       echo 'Y' > /sys/class/net/wwan0/qmi/raw_ip
+    fi
+    if [ "$i" -eq 5 ] ; then
+      verbose "raw-ip mode not confirmed after $i attempts, continuing anyway"
     fi
   done
 
@@ -146,8 +150,12 @@ init() {
   verbose "Waiting for up to $INIT_MAXWAIT seconds for modem to finish initializing"
   i=0
   sleep $INIT_MINWAIT
-  at_cmd "AT" "$INIT_MAXWAIT" 1
-  verbose "AT command: $?"
+  if at_cmd "AT" "$INIT_MAXWAIT" 1 ; then
+    verbose "modem responded to AT"
+  else
+    verbose "modem did not respond after ${INIT_MAXWAIT} attempts"
+    return 1
+  fi
 }
 
 unlock() {
@@ -309,7 +317,12 @@ register() {
         ;;
         2)
           verbose "CEREG=2, not registered but searching. Checking signal level..."
-          printf 'AT+CSQ\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep '.'
+          CSQ_LINE=$(printf 'AT+CSQ\r\n' | timeout "$CHAT_TIMEOUT" atinout - "${SERIAL_DEV}" - | grep -E '^\+CSQ:' || true)
+          if [ -n "$CSQ_LINE" ] ; then
+            verbose "Signal level reported by modem: ${CSQ_LINE}"
+          else
+            verbose "Signal level unavailable: no +CSQ response"
+          fi
           sleep 5
         ;;
         3)
@@ -400,6 +413,7 @@ connect() {
   dns_pri=$(grep 'Primary IPv4 DNS:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
   dns_sec=$(grep 'Secondary IPv4 DNS:' "${ipdata_path}" | cut -d: -f2 | tr -d ' ' )
 
+  verbose "parsed from qmicli: addr=${ip_addr} mask=${ip_mask} gw=${ip_gateway} mtu=${ip_mtu} dns1=${dns_pri} dns2=${dns_sec}"
   verbose "setting up ${IFACE}, see ${RUNDIR}/ipdata"
   # set up interface, re-flushing to avoid errors if addr already set
   ip address flush dev "${IFACE}"
